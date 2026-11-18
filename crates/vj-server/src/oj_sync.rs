@@ -508,17 +508,44 @@ pub async fn fetch_oj_problem_details(
 
     match parsed.platform.as_str() {
         "codeforces" => {
-            // 1. Always fetch exact Title from official Codeforces API
+            // 1. Always fetch exact Title & metadata from official Codeforces API
+            // Note: Codeforces requires no extra query params on contest.standings for non-admin requests.
             let pos = parsed.external_id.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(0);
             let (cid_str, idx_str) = parsed.external_id.split_at(pos);
-            let api_url = format!("{cf_api_base}/contest.standings?contestId={cid_str}&from=1&count=1");
+            let api_url = format!("{cf_api_base}/contest.standings?contestId={cid_str}");
             if let Ok(resp) = http.get(&api_url).send().await {
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let contest_name = json["result"]["contest"]["name"].as_str().unwrap_or("");
                     if let Some(probs) = json["result"]["problems"].as_array() {
                         if let Some(p) = probs.iter().find(|p| p["index"].as_str().unwrap_or("").eq_ignore_ascii_case(idx_str)) {
                             if let Some(name) = p["name"].as_str() {
                                 title = name.to_string();
                             }
+                            let rating = p["rating"].as_i64();
+                            let tags = p["tags"]
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                })
+                                .unwrap_or_default();
+                            let mut meta_lines = Vec::new();
+                            if !contest_name.is_empty() {
+                                meta_lines.push(format!("Contest: {contest_name}"));
+                            }
+                            if let Some(r) = rating {
+                                meta_lines.push(format!("Rating: {r}"));
+                            }
+                            if !tags.is_empty() {
+                                meta_lines.push(format!("Tags: {tags}"));
+                            }
+                            meta_lines.push(format!(
+                                "Full statement: {} (Codeforces blocks automated HTML scraping with Cloudflare, so open the link or use Local WebView in the contest).",
+                                parsed.problem_url
+                            ));
+                            statement = meta_lines.join("\n");
                         }
                     }
                 }
