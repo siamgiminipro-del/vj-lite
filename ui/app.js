@@ -35,7 +35,7 @@ function toast(msg, type = 'info') {
 const API_BASE =
   location.protocol === 'http:' || location.protocol === 'https:'
     ? ''
-    : localStorage.getItem('vj_api_base') || 'http://localhost:3000';
+    : localStorage.getItem('vj_api_base') || 'https://vj-lite-server.onrender.com';
 
 async function api(url, opts = {}) {
   const token = localStorage.getItem('vj_token');
@@ -445,7 +445,7 @@ function wireEvents() {
         const redirectTo =
           location.protocol === 'http:' || location.protocol === 'https:'
             ? `${window.location.origin}/`
-            : 'http://localhost:3000/';
+            : `${API_BASE}/`;
         const authUrl = `${cfg.supabaseUrl.replace(/\/$/, '')}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(redirectTo)}`;
         window.location.href = authUrl;
         return;
