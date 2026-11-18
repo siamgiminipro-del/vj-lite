@@ -726,7 +726,27 @@ function wireEvents() {
       b.classList.add('btn-primary');
       state.selectedOjTab = b.dataset.oj;
       $('oj-handle-label').textContent = `${b.textContent} Handle`;
+      $('btn-oj-webview-login').textContent = `Open ${b.textContent} Sign-In Window (Google / SSO)`;
     });
+  });
+
+  $('btn-oj-webview-login').addEventListener('click', async () => {
+    try {
+      if (inTauriApp()) {
+        await tauriInvoke('open_oj_login_webview', { platform: state.selectedOjTab });
+        toast(`Sign into ${state.selectedOjTab} (Google / Gmail SSO works!) then close that window.`, 'info');
+      } else {
+        const urls = {
+          codeforces: 'https://codeforces.com/enter',
+          atcoder: 'https://atcoder.jp/login',
+          cses: 'https://cses.fi/login',
+          codechef: 'https://www.codechef.com/login',
+        };
+        window.open(urls[state.selectedOjTab] || urls.codeforces, '_blank', 'noopener,noreferrer');
+      }
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   });
 
   $('oj-local-form').addEventListener('submit', async (e) => {

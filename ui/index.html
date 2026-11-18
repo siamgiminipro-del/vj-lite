@@ -372,7 +372,9 @@
         <h2 style="margin:0;font-size:1.1rem">Multi-OJ Local Bridge</h2>
         <button id="btn-close-oj-bridge" class="btn btn-sm btn-outline" type="button">Close</button>
       </div>
-      <p class="muted" style="margin-top:0">Credentials stay encrypted in your OS Keychain / browser — never sent to our server.</p>
+      <p class="muted" style="margin-top:0">
+        Just enter your <strong>Handle</strong> to sync verdicts (no password needed). If you sign into Codeforces with Google/Gmail, use the OJ Sign-In window once so WebView remembers your session.
+      </p>
       <div class="row-gap" style="margin:0.8rem 0">
         <button class="btn btn-sm btn-primary oj-tab-btn" data-oj="codeforces" type="button">Codeforces</button>
         <button class="btn btn-sm oj-tab-btn" data-oj="atcoder" type="button">AtCoder</button>
@@ -385,11 +387,12 @@
           <input id="oj-handle-input" type="text" required placeholder="e.g. siam_cf" />
         </label>
         <label>
-          Password / Session (Stored Locally on This Device Only)
-          <input id="oj-pass-input" type="password" placeholder="Optional — saved in OS Keychain" />
+          Password (Optional — leave blank if using Google / Gmail SSO)
+          <input id="oj-pass-input" type="password" placeholder="Optional — only saved locally in OS Keychain" />
         </label>
-        <div class="callout callout-emerald">✓ Local WebView / Keychain Ready • Handles linked to server</div>
-        <button class="btn btn-primary btn-block" type="submit">Save Locally &amp; Link Handle</button>
+        <div class="callout callout-emerald">✓ Handle alone is enough for automatic verdict syncing</div>
+        <button class="btn btn-primary btn-block" type="submit">Link Handle (No Password Needed)</button>
+        <button id="btn-oj-webview-login" class="btn btn-outline btn-block" type="button">Open Codeforces Sign-In Window (Google / SSO)</button>
       </form>
     </div>
   </div>

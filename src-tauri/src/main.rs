@@ -1,5 +1,6 @@
 use keyring::Entry;
 use serde::Serialize;
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Serialize)]
@@ -44,6 +45,29 @@ fn oj_submit_finished(app: AppHandle, platform: String) {
 }
 
 #[tauri::command]
+async fn open_oj_login_webview(app: AppHandle, platform: String) -> Result<(), String> {
+    let login_url = match platform.to_lowercase().as_str() {
+        "codeforces" => "https://codeforces.com/enter",
+        "atcoder" => "https://atcoder.jp/login",
+        "cses" => "https://cses.fi/login",
+        "codechef" => "https://www.codechef.com/login",
+        _ => return Err(format!("Unsupported platform: {platform}")),
+    };
+    if let Some(existing) = app.get_webview_window("oj-login") {
+        let _ = existing.close();
+    }
+    let parsed_url: tauri::Url = login_url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
+    let label_title = format!("Sign in to {} (Google / SSO supported)", platform.to_uppercase());
+    WebviewWindowBuilder::new(&app, "oj-login", WebviewUrl::External(parsed_url))
+        .title(&label_title)
+        .inner_size(960.0, 720.0)
+        .visible(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn submit_via_webview(
     app: AppHandle,
     platform: String,
@@ -53,21 +77,14 @@ async fn submit_via_webview(
 ) -> Result<(), String> {
     let code_json = serde_json::to_string(&code).map_err(|e| e.to_string())?;
     let lang_json = serde_json::to_string(&language).map_err(|e| e.to_string())?;
-    let plat_json = serde_json::to_string(&platform).map_err(|e| e.to_string())?;
 
     let init_js = format!(
         r#"
         window.addEventListener('DOMContentLoaded', () => {{
-          const path = window.location.pathname;
-          if (!path.includes('submit')) {{
-            window.__TAURI__?.core?.invoke('oj_submit_finished', {{ platform: {plat_json} }});
-            return;
-          }}
+          const path = window.location.pathname.toLowerCase();
+          if (!path.includes('submit')) return;
           const form = document.querySelector('form.submit-form, form[action*="submit"]');
-          if (!form) {{
-            window.__TAURI__?.core?.invoke('show_oj_window');
-            return;
-          }}
+          if (!form) return;
           const lang = {lang_json};
           const code = {code_json};
           const cfSelect = form.querySelector('select[name="programTypeId"]');
@@ -96,10 +113,38 @@ async fn submit_via_webview(
     }
 
     let parsed_url: tauri::Url = submit_url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
+    let app_handle = app.clone();
+    let plat_clone = platform.clone();
     WebviewWindowBuilder::new(&app, "oj-submit", WebviewUrl::External(parsed_url))
-        .title("OJ Background Submit")
+        .title("OJ Submit Window")
+        .inner_size(960.0, 720.0)
         .visible(false)
         .initialization_script(&init_js)
+        .on_page_load(move |win, payload| {
+            if matches!(payload.event(), PageLoadEvent::Finished) {
+                let path = payload.url().path().to_lowercase();
+                if path.contains("enter") || path.contains("login") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                } else if !path.contains("submit") {
+                    let _ = win.close();
+                    let _ = app_handle.emit("oj-submit-done", plat_clone.clone());
+                } else {
+                    // If auto-submit didn't redirect within 2.5s (e.g. human verification), show window to user
+                    let w = win.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+                        if let Ok(u) = w.url() {
+                            let p = u.path().to_lowercase();
+                            if p.contains("submit") || p.contains("enter") || p.contains("login") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    });
+                }
+            }
+        })
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -228,6 +273,7 @@ fn main() {
             get_oj_credentials,
             show_oj_window,
             oj_submit_finished,
+            open_oj_login_webview,
             submit_via_webview,
             start_supabase_google_oauth
         ])
