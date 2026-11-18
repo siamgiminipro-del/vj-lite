@@ -623,7 +623,7 @@ function wireEvents() {
           toast('Complete Google Sign-In in your browser window...', 'info');
           return;
         }
-        const redirectTo = `${window.location.origin}/`;
+        const redirectTo = window.location.origin;
         const authUrl = `${cfg.supabaseUrl.replace(/\/$/, '')}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(
           redirectTo
         )}`;
