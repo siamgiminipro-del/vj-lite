@@ -25,6 +25,8 @@ function esc(s) {
 
 function toast(msg, type = 'info') {
   const box = $('toast-container');
+  const existing = Array.from(box.children).find((el) => el.textContent === msg);
+  if (existing) existing.remove();
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.textContent = msg;
@@ -48,6 +50,18 @@ async function api(url, opts = {}) {
     body: opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && !url.startsWith('/api/auth/')) {
+    localStorage.removeItem('vj_token');
+    state.user = null;
+    if (state.sse) {
+      state.sse.close();
+      state.sse = null;
+    }
+    document.querySelectorAll('.modal').forEach((m) => m.classList.add('hidden'));
+    renderHeader();
+    showView('login-gate');
+    throw new Error('Session expired (server restarted). Please sign in with Google again.');
+  }
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   if (data.token) localStorage.setItem('vj_token', data.token);
   return data;
