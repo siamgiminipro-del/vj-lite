@@ -9,7 +9,7 @@
 <body>
   <header class="topbar">
     <div class="topbar-left">
-      <div class="brand">
+      <div class="brand" style="cursor:pointer" id="brand-home">
         <img src="/logo.svg" alt="VJ-Lite Logo" class="brand-logo" />
         <div>
           <div class="brand-name">VJ-Lite</div>
@@ -19,14 +19,14 @@
       <span id="capacity-badge" class="pill">0 / 50 Users</span>
     </div>
 
-    <div class="topbar-center">
+    <div id="topbar-contest-meta" class="topbar-center hidden">
       <select id="contest-select" class="select-contest"></select>
       <span id="contest-timer-pill" class="pill pill-indigo">--:--:--</span>
     </div>
 
     <div class="topbar-right">
-      <button id="btn-nav-onboarding" class="btn btn-outline btn-sm" type="button">Access Code &amp; OJs</button>
-      <button id="btn-nav-coordinator" class="btn btn-outline btn-sm hidden" type="button">Coordinator Studio</button>
+      <button id="btn-nav-hub" class="btn btn-outline btn-sm hidden" type="button">Contests Hub</button>
+      <button id="btn-nav-create" class="btn btn-primary btn-sm hidden" type="button">+ Create Contest</button>
       <div id="user-controls" class="row-gap"></div>
     </div>
   </header>
@@ -34,88 +34,115 @@
   <div id="toast-container" class="toast-container"></div>
 
   <main class="container">
-    <!-- SCREEN 1: Sign Up (Google) + Join Contest (Access Code) + Multi-OJ Local Bridge -->
-    <section id="view-onboarding" class="hidden">
-      <div class="onboarding-grid">
-        <div class="card">
-          <span class="pill pill-indigo">Step 1 • Sign In &amp; Enter Contest</span>
-          <h1 class="card-title">Welcome to VJ-Lite</h1>
-          <p class="muted">Sign up with Google in one click, then enter your contest access code.</p>
+    <!-- GATE: Google Authentication Required First -->
+    <section id="view-login-gate">
+      <div class="gate-wrap">
+        <div class="card gate-card">
+          <span class="pill pill-indigo">Authentication Required</span>
+          <h1 class="card-title">Sign in to Enter VJ-Lite</h1>
+          <p class="muted">
+            Authenticate with your Google account first to view past contest details, create a contest, or join with an access code.
+          </p>
 
-          <div class="form-stack" style="margin-top:1rem">
+          <div class="form-stack" style="margin-top:1.1rem">
             <button id="btn-google-signin" class="btn btn-google btn-block" type="button">
               <span class="google-badge">G</span> Continue with Google
             </button>
 
-            <div class="divider">OR EMAIL / ACCESS CODE</div>
-
-            <div id="auth-fields" class="form-stack">
-              <label>
-                Email
-                <input id="login-email" type="email" placeholder="you@gmail.com" value="alice@gmail.com" />
-              </label>
-              <label>
-                Password
-                <input id="login-password" type="password" placeholder="••••••" value="alice123" />
-              </label>
-              <div class="two-col">
-                <button id="btn-email-login" class="btn btn-outline" type="button">Sign In</button>
-                <button id="btn-email-register" class="btn btn-outline" type="button">Sign Up</button>
+            <details class="fallback-details">
+              <summary class="muted" style="cursor:pointer;font-size:0.82rem;text-align:center;margin-top:0.4rem">
+                Or sign in with Email / Demo account
+              </summary>
+              <div class="form-stack" style="margin-top:0.85rem">
+                <label>
+                  Email
+                  <input id="login-email" type="email" placeholder="you@gmail.com" value="alice@gmail.com" />
+                </label>
+                <label>
+                  Password
+                  <input id="login-password" type="password" placeholder="••••••" value="alice123" />
+                </label>
+                <div class="two-col">
+                  <button id="btn-email-login" class="btn btn-outline" type="button">Sign In</button>
+                  <button id="btn-email-register" class="btn btn-outline" type="button">Sign Up</button>
+                </div>
+                <div class="row-gap">
+                  <span class="muted" style="font-size:0.75rem">Demo:</span>
+                  <button class="btn btn-sm btn-outline demo-fill" data-e="admin@vjclub.local" data-p="admin123" type="button">Coordinator</button>
+                  <button class="btn btn-sm btn-outline demo-fill" data-e="alice@gmail.com" data-p="alice123" type="button">Alice</button>
+                </div>
               </div>
-              <div class="row-gap">
-                <span class="muted" style="font-size:0.75rem">Demo:</span>
-                <button class="btn btn-sm btn-outline demo-fill" data-e="admin@vjclub.local" data-p="admin123" type="button">Coordinator</button>
-                <button class="btn btn-sm btn-outline demo-fill" data-e="alice@gmail.com" data-p="alice123" type="button">Alice</button>
-              </div>
-            </div>
-
-            <div class="divider">JOIN CONTEST</div>
-            <label>
-              Contest Access Code
-              <input id="join-access-code" type="text" placeholder="CLUB-2026-W1" value="CLUB-2026-W1" />
-            </label>
-            <button id="btn-join-contest" class="btn btn-primary btn-block" type="button">Enter Contest Room →</button>
+            </details>
           </div>
-        </div>
-
-        <div class="card">
-          <span class="pill pill-emerald">Step 2 • Device-Only Storage</span>
-          <h2 class="card-title">Multi-OJ Local Bridge</h2>
-          <p class="muted">Connect any supported judge locally. Passwords stay in your OS Keychain / browser — never sent to our server.</p>
-
-          <div class="row-gap" style="margin:0.9rem 0">
-            <button class="btn btn-sm btn-primary oj-tab-btn" data-oj="codeforces" type="button">Codeforces</button>
-            <button class="btn btn-sm oj-tab-btn" data-oj="atcoder" type="button">AtCoder</button>
-            <button class="btn btn-sm oj-tab-btn" data-oj="cses" type="button">CSES</button>
-            <button class="btn btn-sm oj-tab-btn" data-oj="codechef" type="button">CodeChef</button>
-          </div>
-
-          <form id="oj-local-form" class="form-stack">
-            <label>
-              <span id="oj-handle-label">Codeforces Handle</span>
-              <input id="oj-handle-input" type="text" required placeholder="e.g. siam_cf" />
-            </label>
-            <label>
-              Password / Session (Stored Locally on This Device Only)
-              <input id="oj-pass-input" type="password" placeholder="Optional — saved in OS Keychain" />
-            </label>
-            <div id="oj-status-banner" class="callout callout-emerald">
-              ✓ Local WebView / Keychain Ready • Handles synced with contest server
-            </div>
-            <button class="btn btn-outline btn-block" type="submit">Save Locally &amp; Link Handle</button>
-          </form>
         </div>
       </div>
     </section>
 
-    <!-- SCREEN 2: Coordinator Studio -->
+    <!-- POST-LOGIN HUB: Previous Contest Details + Create Contest + Join with Access Code -->
+    <section id="view-hub" class="hidden">
+      <div class="hub-top-grid">
+        <!-- Card 1: Join with Access Code -->
+        <div class="card">
+          <span class="pill pill-indigo">Participate</span>
+          <h2 class="card-title" style="font-size:1.25rem">Join Contest with Access Code</h2>
+          <p class="muted">Enter the access code shared by your contest coordinator to enter an active contest.</p>
+          <div class="form-stack" style="margin-top:0.9rem">
+            <label>
+              Contest Access Code
+              <input id="join-access-code" type="text" placeholder="e.g. CLUB-2026-W1" value="CLUB-2026-W1" />
+            </label>
+            <button id="btn-join-contest" class="btn btn-primary btn-block" type="button">Join Contest Room →</button>
+          </div>
+        </div>
+
+        <!-- Card 2: Create a Contest -->
+        <div class="card">
+          <span class="pill pill-emerald">Host</span>
+          <h2 class="card-title" style="font-size:1.25rem">Create a Contest</h2>
+          <p class="muted">Pick Codeforces, AtCoder, CSES, CodeChef, or custom Local Judge problems and generate an access code.</p>
+          <div class="form-stack" style="margin-top:0.9rem">
+            <button id="btn-hub-create-contest" class="btn btn-emerald btn-block" type="button">+ Create New Contest</button>
+            <button id="btn-open-oj-bridge" class="btn btn-outline btn-block" type="button">Configure Local OJ Handles (CF / AtCoder / CSES)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Previous & Active Contests List (Past 10 Contests) -->
+      <div class="card" style="margin-top:1.25rem">
+        <div class="row-between" style="margin-bottom:0.85rem;flex-wrap:wrap">
+          <div>
+            <h2 style="margin:0;font-size:1.15rem">Previous &amp; Active Contests (Latest 10)</h2>
+            <p class="muted" style="margin:0.15rem 0 0">Inspect contest details, final standings, and upsolve archived rounds.</p>
+          </div>
+          <button id="btn-refresh-hub" class="btn btn-outline btn-sm" type="button">↻ Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Contest</th>
+                <th>Status</th>
+                <th>Schedule</th>
+                <th>Problems</th>
+                <th>Participants</th>
+                <th>Submissions</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="hub-contests-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- CREATE CONTEST & PROBLEM STUDIO -->
     <section id="view-coordinator" class="hidden">
       <div class="row-between" style="margin-bottom:1rem">
         <div>
-          <h1 style="margin:0;font-size:1.4rem">Coordinator Studio</h1>
-          <p class="muted" style="margin:0">Create contests with access codes, import multi-OJ problems, and review past 10 contests.</p>
+          <h1 style="margin:0;font-size:1.4rem">Create Contest &amp; Problems</h1>
+          <p class="muted" style="margin:0">Configure access code, rules, and mix Codeforces / AtCoder / CSES / Local problems.</p>
         </div>
-        <button id="btn-back-contest" class="btn btn-outline btn-sm" type="button">← Back to Contest</button>
+        <button id="btn-back-hub" class="btn btn-outline btn-sm" type="button">← Back to Contests Hub</button>
       </div>
 
       <div class="two-col" style="grid-template-columns: 420px 1fr; align-items:start">
@@ -148,7 +175,7 @@
               <div class="muted" style="font-size:0.8rem;margin-bottom:0.4rem">Select Problems (Aliased A, B, C...)</div>
               <div id="cc-problem-list" class="form-stack" style="max-height:170px;overflow-y:auto;gap:0.4rem"></div>
             </div>
-            <button class="btn btn-emerald btn-block" type="submit">Publish Contest &amp; Copy Code</button>
+            <button class="btn btn-emerald btn-block" type="submit">Publish Contest &amp; Copy Access Code</button>
           </form>
         </div>
 
@@ -197,11 +224,14 @@
       </div>
     </section>
 
-    <!-- SCREENS 3 & 4: Active Contest Workspace, Submissions, Standings, Clarifications -->
-    <section id="view-contest">
+    <!-- CONTEST WORKSPACE, SUBMISSIONS, STANDINGS, CLARIFICATIONS -->
+    <section id="view-contest" class="hidden">
       <div class="row-between" style="margin-bottom:0.9rem;flex-wrap:wrap">
         <div>
-          <h1 id="contest-title" style="margin:0;font-size:1.35rem">Loading...</h1>
+          <div class="row-gap" style="margin-bottom:0.25rem">
+            <button id="btn-contest-back-hub" class="btn btn-outline btn-sm" type="button">← Hub</button>
+            <h1 id="contest-title" style="margin:0;font-size:1.35rem">Loading...</h1>
+          </div>
           <p id="contest-desc" class="muted" style="margin:0.2rem 0 0"></p>
         </div>
         <div class="row-gap">
@@ -353,6 +383,48 @@
     </section>
   </main>
 
+  <!-- Modal: Multi-OJ Local Bridge -->
+  <div id="modal-oj-bridge" class="modal hidden">
+    <div class="modal-card">
+      <div class="row-between" style="margin-bottom:0.75rem">
+        <h2 style="margin:0;font-size:1.1rem">Multi-OJ Local Bridge</h2>
+        <button id="btn-close-oj-bridge" class="btn btn-sm btn-outline" type="button">Close</button>
+      </div>
+      <p class="muted" style="margin-top:0">Credentials stay encrypted in your OS Keychain / browser — never sent to our server.</p>
+      <div class="row-gap" style="margin:0.8rem 0">
+        <button class="btn btn-sm btn-primary oj-tab-btn" data-oj="codeforces" type="button">Codeforces</button>
+        <button class="btn btn-sm oj-tab-btn" data-oj="atcoder" type="button">AtCoder</button>
+        <button class="btn btn-sm oj-tab-btn" data-oj="cses" type="button">CSES</button>
+        <button class="btn btn-sm oj-tab-btn" data-oj="codechef" type="button">CodeChef</button>
+      </div>
+      <form id="oj-local-form" class="form-stack">
+        <label>
+          <span id="oj-handle-label">Codeforces Handle</span>
+          <input id="oj-handle-input" type="text" required placeholder="e.g. siam_cf" />
+        </label>
+        <label>
+          Password / Session (Stored Locally on This Device Only)
+          <input id="oj-pass-input" type="password" placeholder="Optional — saved in OS Keychain" />
+        </label>
+        <div class="callout callout-emerald">✓ Local WebView / Keychain Ready • Handles linked to server</div>
+        <button class="btn btn-primary btn-block" type="submit">Save Locally &amp; Link Handle</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Previous / Active Contest Details -->
+  <div id="modal-contest-details" class="modal hidden">
+    <div class="modal-card" style="max-width:680px">
+      <div class="row-between" style="margin-bottom:0.75rem">
+        <h2 id="cd-title" style="margin:0;font-size:1.15rem">Contest Details</h2>
+        <button id="btn-close-cd" class="btn btn-sm btn-outline" type="button">Close</button>
+      </div>
+      <div id="cd-meta" class="muted" style="margin-bottom:0.85rem"></div>
+      <div id="cd-body" class="form-stack"></div>
+    </div>
+  </div>
+
+  <!-- Modal: Code View -->
   <div id="modal-code" class="modal hidden">
     <div class="modal-card">
       <div class="row-between" style="margin-bottom:0.75rem">

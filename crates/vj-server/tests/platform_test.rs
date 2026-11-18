@@ -37,6 +37,10 @@ async fn test_health_google_auth_access_code_and_past_contests() {
     assert_eq!(health["engine"], "rust-axum");
     assert_eq!(health["maxUsers"], 50);
 
+    // 1b. Unauthenticated request to contests is blocked (401)
+    let unauth = client.get(format!("{base}/api/contests")).send().await.unwrap();
+    assert_eq!(unauth.status(), 401);
+
     // 2. Google Sign-Up (new participant)
     let g_res = client
         .post(format!("{base}/api/auth/google"))
@@ -72,6 +76,26 @@ async fn test_health_google_auth_access_code_and_past_contests() {
         .await
         .unwrap();
     assert!(list["contests"].as_array().unwrap().len() >= 2);
+    assert!(list["contests"][0]["submission_count"].is_number());
+
+    // 5. Any authenticated user can create a contest with access code
+    let now = vj_server::db::now_unix();
+    let create_res = client
+        .post(format!("{base}/api/contests"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "title": "Student Created Practice",
+            "accessCode": "STU-01",
+            "startTime": now,
+            "endTime": now + 3600,
+            "problemIds": [1]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_res.status(), 201);
+    let create_json: Value = create_res.json().await.unwrap();
+    assert_eq!(create_json["access_code"], "STU-01");
 }
 
 #[tokio::test]

@@ -29,7 +29,7 @@ function toast(msg, type = 'info') {
   el.className = `toast ${type}`;
   el.textContent = msg;
   box.appendChild(el);
-  setTimeout(() => el.remove(), 4000);
+  setTimeout(() => el.remove(), 4200);
 }
 
 const API_BASE =
@@ -65,27 +65,44 @@ function fmtDur(sec) {
   return `${h}:${m}:${r}`;
 }
 
+function fmtDate(sec) {
+  return new Date(sec * 1000).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 function showView(view) {
-  $('view-onboarding').classList.toggle('hidden', view !== 'onboarding');
+  if (!state.user && view !== 'login-gate') {
+    view = 'login-gate';
+  }
+  $('view-login-gate').classList.toggle('hidden', view !== 'login-gate');
+  $('view-hub').classList.toggle('hidden', view !== 'hub');
   $('view-coordinator').classList.toggle('hidden', view !== 'coordinator');
   $('view-contest').classList.toggle('hidden', view !== 'contest');
+
+  $('topbar-contest-meta').classList.toggle('hidden', !state.user || view !== 'contest');
+  $('btn-nav-hub').classList.toggle('hidden', !state.user);
+  $('btn-nav-create').classList.toggle('hidden', !state.user);
 }
 
 function renderHeader() {
   $('capacity-badge').textContent = `${state.userCount} / ${state.maxUsers} Users`;
   const isCoord = state.user && (state.user.role === 'coordinator' || state.user.role === 'admin');
-  $('btn-nav-coordinator').classList.toggle('hidden', !isCoord);
   $('btn-sync-all').classList.toggle('hidden', !isCoord);
   $('clar-ann-wrap').classList.toggle('hidden', !isCoord);
 
   const uc = $('user-controls');
   if (!state.user) {
-    uc.innerHTML = `<button id="btn-go-login" class="btn btn-primary btn-sm" type="button">Sign In / Google</button>`;
-    $('btn-go-login').addEventListener('click', () => showView('onboarding'));
+    uc.innerHTML = `<span class="pill pill-indigo">Please sign in</span>`;
     return;
   }
 
-  const handles = (state.user.oj_handles || []).map((h) => `${h.platform.slice(0, 2).toUpperCase()} ✓`).join(' • ');
+  const handles = (state.user.oj_handles || [])
+    .map((h) => `${h.platform.slice(0, 2).toUpperCase()} ✓`)
+    .join(' • ');
   uc.innerHTML = `
     ${handles ? `<span class="pill pill-emerald">${esc(handles)}</span>` : ''}
     <span class="pill">${esc(state.user.display_name)}</span>
@@ -94,10 +111,13 @@ function renderHeader() {
   $('btn-logout').addEventListener('click', async () => {
     await api('/api/auth/logout', { method: 'POST' });
     localStorage.removeItem('vj_token');
+    if (state.sse) state.sse.close();
     state.user = null;
-    await refreshMe();
-    showView('onboarding');
-    toast('Logged out.');
+    state.contests = [];
+    state.activeContestId = null;
+    renderHeader();
+    showView('login-gate');
+    toast('Signed out.');
   });
 }
 
@@ -110,7 +130,150 @@ function updateTimer() {
   else $('contest-timer-pill').textContent = 'Archived / Ended';
 }
 
-function renderContestList() {
+function renderHubContests() {
+  const tbody = $('hub-contests-tbody');
+  tbody.innerHTML = '';
+
+  if (state.contests.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="muted">No contests yet. Create one above!</td></tr>';
+    return;
+  }
+
+  for (const c of state.contests) {
+    const tr = document.createElement('tr');
+    const stPill =
+      c.status === 'running'
+        ? '<span class="pill pill-emerald">RUNNING</span>'
+        : c.status === 'upcoming'
+        ? '<span class="pill pill-indigo">UPCOMING</span>'
+        : '<span class="pill">ENDED</span>';
+
+    const canEnterDirect = c.joined || c.status === 'ended';
+    const actionLabel = c.status === 'ended' ? 'Upsolve / Open' : c.joined ? 'Enter Contest' : 'Join with Code';
+
+    tr.innerHTML = `
+      <td>
+        <strong>${esc(c.title)}</strong>
+        <div class="muted" style="font-size:0.75rem">By ${esc(c.creator_name || 'Coordinator')}${
+      c.access_code ? ` • Code: <code>${esc(c.access_code)}</code>` : ''
+    }</div>
+      </td>
+      <td>${stPill}</td>
+      <td style="font-size:0.8rem">${esc(fmtDate(c.start_time))}<div class="muted" style="font-size:0.74rem">to ${esc(
+      fmtDate(c.end_time)
+    )}</div></td>
+      <td>${c.problem_count}</td>
+      <td>${c.participant_count}</td>
+      <td>${c.submission_count ?? 0}</td>
+      <td>
+        <div class="row-gap">
+          <button class="btn btn-sm btn-outline btn-details" type="button">Details</button>
+          <button class="btn btn-sm ${canEnterDirect ? 'btn-primary' : 'btn-outline'} btn-enter" type="button">${actionLabel}</button>
+        </div>
+      </td>
+    `;
+
+    tr.querySelector('.btn-details').addEventListener('click', () => openContestDetailsModal(c));
+    tr.querySelector('.btn-enter').addEventListener('click', async () => {
+      if (canEnterDirect) {
+        await openContest(c.id);
+      } else {
+        $('join-access-code').focus();
+        toast('Enter the access code above to join this contest.', 'info');
+      }
+    });
+
+    tbody.appendChild(tr);
+  }
+}
+
+async function openContestDetailsModal(c) {
+  $('cd-title').textContent = c.title;
+  $('cd-meta').textContent = `${c.status.toUpperCase()} • ${fmtDate(c.start_time)} → ${fmtDate(
+    c.end_time
+  )} • Penalty: ${c.penalty_minutes}m • Participants: ${c.participant_count} • Submissions: ${
+    c.submission_count ?? 0
+  }`;
+  $('cd-body').innerHTML = '<div class="muted">Loading contest details...</div>';
+  $('modal-contest-details').classList.remove('hidden');
+
+  if (!c.joined && c.status !== 'ended') {
+    $('cd-body').innerHTML = `
+      <div class="callout callout-indigo">
+        This active contest is protected by an Access Code. Enter the access code to view problems and participate.
+      </div>
+      <div class="row-gap">
+        <input id="cd-code-input" type="text" placeholder="Enter Access Code" style="flex:1" />
+        <button id="cd-join-btn" class="btn btn-primary" type="button">Join Contest →</button>
+      </div>
+    `;
+    $('cd-join-btn').addEventListener('click', async () => {
+      try {
+        const res = await api('/api/contests/join', {
+          method: 'POST',
+          body: { accessCode: $('cd-code-input').value.trim() },
+        });
+        $('modal-contest-details').classList.add('hidden');
+        toast(`Joined ${res.title}!`, 'success');
+        await loadContests();
+        await openContest(res.contestId);
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+    return;
+  }
+
+  try {
+    const [detail, standings] = await Promise.all([
+      api(`/api/contests/${c.id}`),
+      api(`/api/contests/${c.id}/standings`),
+    ]);
+
+    const probsHtml = detail.problems
+      .map(
+        (p) =>
+          `<div class="row-between" style="padding:0.45rem 0.6rem;background:var(--canvas);border-radius:8px;border:1px solid var(--border)">
+            <span><strong>${esc(p.alias)}.</strong> ${esc(p.title)}</span>
+            <span class="pill">${esc(p.platform)} ${esc(p.external_id || '')}</span>
+          </div>`
+      )
+      .join('');
+
+    const topRows = standings.rows
+      .slice(0, 5)
+      .map(
+        (r) =>
+          `<tr><td>#${r.rank}</td><td>${esc(r.display_name)}</td><td><strong>${r.solved_count}</strong></td><td>${r.total_penalty}</td></tr>`
+      )
+      .join('');
+
+    $('cd-body').innerHTML = `
+      <div>
+        <div class="muted" style="font-size:0.78rem;font-weight:700;margin-bottom:0.4rem">PROBLEMS (${detail.problems.length})</div>
+        <div class="form-stack" style="gap:0.4rem">${probsHtml}</div>
+      </div>
+      <div>
+        <div class="muted" style="font-size:0.78rem;font-weight:700;margin-bottom:0.4rem">TOP STANDINGS</div>
+        <table class="data-table">
+          <thead><tr><th>Rank</th><th>Participant</th><th>Solved</th><th>Penalty</th></tr></thead>
+          <tbody>${topRows || '<tr><td colspan="4" class="muted">No ranked submissions yet.</td></tr>'}</tbody>
+        </table>
+      </div>
+      <button id="cd-open-btn" class="btn btn-primary btn-block" type="button">
+        ${c.status === 'ended' ? 'Open Contest & Upsolve →' : 'Enter Contest Workspace →'}
+      </button>
+    `;
+    $('cd-open-btn').addEventListener('click', async () => {
+      $('modal-contest-details').classList.add('hidden');
+      await openContest(c.id);
+    });
+  } catch (err) {
+    $('cd-body').innerHTML = `<div class="muted">${esc(err.message)}</div>`;
+  }
+}
+
+function renderContestSelect() {
   const sel = $('contest-select');
   sel.innerHTML = '';
   state.contests.forEach((c) => {
@@ -130,7 +293,9 @@ function renderProblems() {
   clarSel.innerHTML = '<option value="">General</option>';
 
   const acSet = new Set(
-    state.submissions.filter((s) => state.user && s.user_id === state.user.id && s.verdict === 'AC').map((s) => s.problem_id)
+    state.submissions
+      .filter((s) => state.user && s.user_id === state.user.id && s.verdict === 'AC')
+      .map((s) => s.problem_id)
   );
 
   for (const p of probs) {
@@ -293,15 +458,11 @@ async function refreshMe() {
 }
 
 async function loadContests() {
+  if (!state.user) return;
   const data = await api('/api/contests?limit=10');
   state.contests = data.contests;
-  if (!state.activeContestId && state.contests.length > 0) {
-    state.activeContestId = state.contests[0].id;
-  }
-  renderContestList();
-  if (state.activeContestId) {
-    await openContest(state.activeContestId);
-  }
+  renderContestSelect();
+  renderHubContests();
 }
 
 async function openContest(contestId) {
@@ -309,6 +470,7 @@ async function openContest(contestId) {
     const data = await api(`/api/contests/${contestId}`);
     state.contestData = data;
     state.activeContestId = contestId;
+    renderContestSelect();
     $('contest-title').textContent = data.contest.title;
     $('contest-desc').textContent = data.contest.description || '';
     $('contest-status-pill').textContent = data.contest.status.toUpperCase();
@@ -325,9 +487,23 @@ async function openContest(contestId) {
     showView('contest');
     connectSse(contestId);
   } catch (err) {
-    showView('onboarding');
+    showView('hub');
     toast(err.message, 'error');
   }
+}
+
+async function openCreateContestView() {
+  const data = await api('/api/problems');
+  const picker = $('cc-problem-list');
+  picker.innerHTML = '';
+  for (const p of data.problems) {
+    const lbl = document.createElement('label');
+    lbl.className = 'row-gap';
+    lbl.style.flexDirection = 'row';
+    lbl.innerHTML = `<input type="checkbox" value="${p.id}" /> [${esc(p.platform || 'local')}] ${esc(p.title)}`;
+    picker.appendChild(lbl);
+  }
+  showView('coordinator');
 }
 
 function connectSse(contestId) {
@@ -354,7 +530,7 @@ async function loadStandings(contestId) {
 }
 
 async function handleExternalSubmit() {
-  if (!state.user) return showView('onboarding');
+  if (!state.user) return showView('login-gate');
   const prob = (state.contestData?.problems || []).find((p) => p.id === state.activeProblemId);
   if (!prob) return;
   const code = $('code-editor').value;
@@ -384,7 +560,7 @@ async function handleExternalSubmit() {
 }
 
 async function handleLocalJudge(useLocalAlt = false) {
-  if (!state.user) return showView('onboarding');
+  if (!state.user) return showView('login-gate');
   const code = $('code-editor').value;
   const language = $('language-select').value;
   if (!code.trim()) return toast('Write code first.', 'error');
@@ -402,6 +578,13 @@ async function handleLocalJudge(useLocalAlt = false) {
   await Promise.all([loadSubmissions(state.activeContestId), loadStandings(state.activeContestId)]);
 }
 
+async function completeLoginAndEnterHub(msg) {
+  await refreshMe();
+  await loadContests();
+  showView('hub');
+  if (msg) toast(msg, 'success');
+}
+
 function wireEvents() {
   document.querySelectorAll('.tab').forEach((b) => {
     b.addEventListener('click', () => {
@@ -412,24 +595,20 @@ function wireEvents() {
     });
   });
 
-  $('btn-nav-onboarding').addEventListener('click', () => showView('onboarding'));
-  $('btn-back-contest').addEventListener('click', () => showView('contest'));
-  $('btn-nav-coordinator').addEventListener('click', async () => {
-    const data = await api('/api/problems');
-    const picker = $('cc-problem-list');
-    picker.innerHTML = '';
-    for (const p of data.problems) {
-      const lbl = document.createElement('label');
-      lbl.className = 'row-gap';
-      lbl.style.flexDirection = 'row';
-      lbl.innerHTML = `<input type="checkbox" value="${p.id}" /> [${esc(p.platform || 'local')}] ${esc(p.title)}`;
-      picker.appendChild(lbl);
-    }
-    showView('coordinator');
-  });
+  $('brand-home').addEventListener('click', () => showView(state.user ? 'hub' : 'login-gate'));
+  $('btn-nav-hub').addEventListener('click', () => showView('hub'));
+  $('btn-back-hub').addEventListener('click', () => showView('hub'));
+  $('btn-contest-back-hub').addEventListener('click', () => showView('hub'));
+  $('btn-nav-create').addEventListener('click', () => openCreateContestView());
+  $('btn-hub-create-contest').addEventListener('click', () => openCreateContestView());
+  $('btn-refresh-hub').addEventListener('click', () => loadContests());
+
+  $('btn-open-oj-bridge').addEventListener('click', () => $('modal-oj-bridge').classList.remove('hidden'));
+  $('btn-close-oj-bridge').addEventListener('click', () => $('modal-oj-bridge').classList.add('hidden'));
+  $('btn-close-cd').addEventListener('click', () => $('modal-contest-details').classList.add('hidden'));
+  $('btn-close-code').addEventListener('click', () => $('modal-code').classList.add('hidden'));
 
   $('contest-select').addEventListener('change', (e) => openContest(Number(e.target.value)));
-  $('btn-close-code').addEventListener('click', () => $('modal-code').classList.add('hidden'));
 
   document.querySelectorAll('.demo-fill').forEach((b) => {
     b.addEventListener('click', () => {
@@ -438,26 +617,47 @@ function wireEvents() {
     });
   });
 
+  // Google Auth (Tauri uses system browser + loopback; Web uses standard OAuth redirect)
   $('btn-google-signin').addEventListener('click', async () => {
     try {
       const cfg = await api('/api/auth/config');
       if (cfg.supabaseEnabled && cfg.supabaseUrl) {
-        const redirectTo =
-          location.protocol === 'http:' || location.protocol === 'https:'
-            ? `${window.location.origin}/`
-            : `${API_BASE}/`;
-        const authUrl = `${cfg.supabaseUrl.replace(/\/$/, '')}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(redirectTo)}`;
+        if (isTauri()) {
+          await window.__TAURI__.core.invoke('start_supabase_google_oauth', {
+            supabaseUrl: cfg.supabaseUrl,
+          });
+          toast('Complete Google Sign-In in your browser window...', 'info');
+          return;
+        }
+        const redirectTo = `${window.location.origin}/`;
+        const authUrl = `${cfg.supabaseUrl.replace(/\/$/, '')}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(
+          redirectTo
+        )}`;
         window.location.href = authUrl;
         return;
       }
 
       const email = $('login-email').value.trim() || 'siam@gmail.com';
       await api('/api/auth/google', { method: 'POST', body: { email, displayName: email.split('@')[0] } });
-      await refreshMe();
-      await loadContests();
-      toast(`Signed in with Google (${email})!`, 'success');
-    } catch (e) { toast(e.message, 'error'); }
+      await completeLoginAndEnterHub(`Signed in with Google (${email})!`);
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   });
+
+  if (window.__TAURI__?.event?.listen) {
+    window.__TAURI__.event.listen('supabase-oauth-token', async (event) => {
+      try {
+        const res = await api('/api/auth/supabase', {
+          method: 'POST',
+          body: { accessToken: event.payload },
+        });
+        await completeLoginAndEnterHub(`Signed in with Google (${res.user.email})!`);
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  }
 
   $('btn-email-login').addEventListener('click', async () => {
     try {
@@ -465,10 +665,10 @@ function wireEvents() {
         method: 'POST',
         body: { email: $('login-email').value, password: $('login-password').value },
       });
-      await refreshMe();
-      await loadContests();
-      toast('Signed in!', 'success');
-    } catch (e) { toast(e.message, 'error'); }
+      await completeLoginAndEnterHub('Signed in!');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   });
 
   $('btn-email-register').addEventListener('click', async () => {
@@ -478,10 +678,10 @@ function wireEvents() {
         method: 'POST',
         body: { email, displayName: email.split('@')[0], password: $('login-password').value },
       });
-      await refreshMe();
-      await loadContests();
-      toast('Account created!', 'success');
-    } catch (e) { toast(e.message, 'error'); }
+      await completeLoginAndEnterHub('Account created!');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   });
 
   $('btn-join-contest').addEventListener('click', async () => {
@@ -493,7 +693,9 @@ function wireEvents() {
       toast(`Joined ${res.title}!`, 'success');
       await loadContests();
       await openContest(res.contestId);
-    } catch (e) { toast(e.message, 'error'); }
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   });
 
   document.querySelectorAll('.oj-tab-btn').forEach((b) => {
@@ -521,8 +723,11 @@ function wireEvents() {
       }
       await api('/api/oj/link', { method: 'POST', body: { platform: state.selectedOjTab, handle } });
       await refreshMe();
+      $('modal-oj-bridge').classList.add('hidden');
       toast(`Linked ${state.selectedOjTab} handle @${handle} (credentials kept local).`, 'success');
-    } catch (err) { toast(err.message, 'error'); }
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   });
 
   $('cp-platform').addEventListener('change', (e) => {
@@ -548,8 +753,10 @@ function wireEvents() {
         },
       });
       toast('Problem saved!', 'success');
-      $('btn-nav-coordinator').click();
-    } catch (err) { toast(err.message, 'error'); }
+      await openCreateContestView();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   });
 
   $('create-contest-form').addEventListener('submit', async (e) => {
@@ -571,9 +778,11 @@ function wireEvents() {
       });
       navigator.clipboard?.writeText(res.access_code).catch(() => {});
       toast(`Contest created! Access Code: ${res.access_code}`, 'success');
-      state.activeContestId = res.id;
       await loadContests();
-    } catch (err) { toast(err.message, 'error'); }
+      await openContest(res.id);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   });
 
   $('btn-submit-webview').addEventListener('click', () => handleExternalSubmit().catch((e) => toast(e.message, 'error')));
@@ -584,14 +793,18 @@ function wireEvents() {
       const r = await api(`/api/contests/${state.activeContestId}/sync`, { method: 'POST', body: {} });
       toast(`Synced ${r.syncedCount} new, ${r.updatedCount} updated.`, 'success');
       await Promise.all([loadSubmissions(state.activeContestId), loadStandings(state.activeContestId)]);
-    } catch (e) { toast(e.message, 'error'); }
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   });
   $('btn-sync-all').addEventListener('click', async () => {
     try {
       const r = await api(`/api/contests/${state.activeContestId}/sync-all`, { method: 'POST', body: {} });
       toast(`Synced ${r.totalSynced} new across ${r.checkedHandles} handles.`, 'success');
       await Promise.all([loadSubmissions(state.activeContestId), loadStandings(state.activeContestId)]);
-    } catch (e) { toast(e.message, 'error'); }
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   });
 
   $('filter-mine').addEventListener('change', () => loadSubmissions(state.activeContestId));
@@ -612,7 +825,9 @@ function wireEvents() {
       $('clar-question').value = '';
       await openContest(state.activeContestId);
       toast('Posted!', 'success');
-    } catch (e) { toast(e.message, 'error'); }
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   });
 
   document.addEventListener('visibilitychange', () => {
@@ -645,6 +860,11 @@ async function handleSupabaseOAuthReturn() {
   wireEvents();
   await handleSupabaseOAuthReturn();
   await refreshMe();
-  await loadContests();
+  if (state.user) {
+    await loadContests();
+    showView('hub');
+  } else {
+    showView('login-gate');
+  }
   setInterval(updateTimer, 1000);
 })();

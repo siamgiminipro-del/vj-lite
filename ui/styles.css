@@ -163,6 +163,24 @@ select:focus, input:focus, textarea:focus {
   margin-top: 1.5rem;
 }
 
+.gate-wrap {
+  min-height: calc(100vh - 140px);
+  display: grid;
+  place-items: center;
+}
+
+.gate-card {
+  width: 100%;
+  max-width: 440px;
+  padding: 2rem;
+}
+
+.hub-top-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.25rem;
+}
+
 .card-title { margin: 0.5rem 0 0.3rem; font-size: 1.4rem; }
 
 .divider {

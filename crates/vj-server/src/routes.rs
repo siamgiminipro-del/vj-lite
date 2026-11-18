@@ -455,9 +455,6 @@ async fn create_problem(
         Ok(u) => u,
         Err(r) => return r,
     };
-    if !is_coordinator(&user) {
-        return err_resp(403, "Coordinator access required.");
-    }
 
     let now = now_unix();
     let source_type = if body.source_type == "local" { "local" } else { "external" };
@@ -522,18 +519,24 @@ async fn list_contests(
     headers: HeaderMap,
     Query(q): Query<ContestsQuery>,
 ) -> Response {
+    let user = match require_user(&state, &headers) {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
     let conn = state.db.lock().unwrap();
-    let user = session_user(&conn, &headers);
     let limit = q.limit.unwrap_or(10).clamp(1, 50);
     let now = now_unix();
 
     let mut stmt = conn
         .prepare(
             "SELECT c.id, c.title, c.description, c.access_code, c.start_time, c.end_time,
-                    c.penalty_minutes, c.freeze_minutes,
+                    c.penalty_minutes, c.freeze_minutes, c.created_by,
+                    COALESCE(u.display_name, 'Coordinator') AS creator_name,
                     (SELECT COUNT(*) FROM contest_problems cp WHERE cp.contest_id = c.id) AS prob_count,
-                    (SELECT COUNT(*) FROM contest_participants p WHERE p.contest_id = c.id) AS part_count
+                    (SELECT COUNT(*) FROM contest_participants p WHERE p.contest_id = c.id) AS part_count,
+                    (SELECT COUNT(*) FROM submissions s WHERE s.contest_id = c.id) AS sub_count
              FROM contests c
+             LEFT JOIN users u ON u.id = c.created_by
              ORDER BY c.id DESC
              LIMIT ?",
         )
@@ -545,6 +548,7 @@ async fn list_contests(
             let start: i64 = r.get(4)?;
             let end: i64 = r.get(5)?;
             let access_code: String = r.get(3)?;
+            let created_by: Option<i64> = r.get(8)?;
             let status = if now < start {
                 "upcoming"
             } else if now <= end {
@@ -552,31 +556,32 @@ async fn list_contests(
             } else {
                 "ended"
             };
-            let joined = user.as_ref().is_some_and(|u| {
-                is_coordinator(u)
-                    || conn
-                        .query_row(
-                            "SELECT COUNT(*) FROM contest_participants WHERE contest_id = ? AND user_id = ?",
-                            params![cid, u.id],
-                            |x| x.get::<_, i64>(0),
-                        )
-                        .unwrap_or(0)
-                        > 0
-            });
-            let show_code = user.as_ref().is_some_and(is_coordinator);
+            let is_owner = created_by.is_some_and(|owner| owner == user.id) || is_coordinator(&user);
+            let joined = is_owner
+                || conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM contest_participants WHERE contest_id = ? AND user_id = ?",
+                        params![cid, user.id],
+                        |x| x.get::<_, i64>(0),
+                    )
+                    .unwrap_or(0)
+                    > 0;
 
             Ok(json!({
                 "id": cid,
                 "title": r.get::<_, String>(1)?,
                 "description": r.get::<_, String>(2)?,
-                "access_code": if show_code { Some(access_code) } else { None },
+                "access_code": if is_owner { Some(access_code) } else { None },
                 "start_time": start,
                 "end_time": end,
                 "penalty_minutes": r.get::<_, i64>(6)?,
                 "freeze_minutes": r.get::<_, i64>(7)?,
-                "problem_count": r.get::<_, i64>(8)?,
-                "participant_count": r.get::<_, i64>(9)?,
+                "creator_name": r.get::<_, String>(9)?,
+                "problem_count": r.get::<_, i64>(10)?,
+                "participant_count": r.get::<_, i64>(11)?,
+                "submission_count": r.get::<_, i64>(12)?,
                 "status": status,
+                "is_creator": is_owner,
                 "joined": joined
             }))
         })
@@ -614,9 +619,6 @@ async fn create_contest(
         Ok(u) => u,
         Err(r) => return r,
     };
-    if !is_coordinator(&user) {
-        return err_resp(403, "Coordinator access required.");
-    }
     if body.title.trim().is_empty() || body.end_time <= body.start_time || body.problem_ids.is_empty() {
         return err_resp(400, "Provide title, valid time range, and at least one problem.");
     }
@@ -704,13 +706,16 @@ async fn get_contest(
     headers: HeaderMap,
     Path(contest_id): Path<i64>,
 ) -> Response {
+    let user = match require_user(&state, &headers) {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
     let conn = state.db.lock().unwrap();
-    let user = session_user(&conn, &headers);
     let now = now_unix();
 
     let contest = conn
         .query_row(
-            "SELECT id, title, description, access_code, start_time, end_time, penalty_minutes, freeze_minutes
+            "SELECT id, title, description, access_code, start_time, end_time, penalty_minutes, freeze_minutes, created_by
              FROM contests WHERE id = ?",
             params![contest_id],
             |r| {
@@ -723,28 +728,28 @@ async fn get_contest(
                     r.get::<_, i64>(5)?,
                     r.get::<_, i64>(6)?,
                     r.get::<_, i64>(7)?,
+                    r.get::<_, Option<i64>>(8)?,
                 ))
             },
         )
         .ok();
 
-    let Some((id, title, desc, code, start, end, pen, freeze)) = contest else {
+    let Some((id, title, desc, code, start, end, pen, freeze, created_by)) = contest else {
         return err_resp(404, "Contest not found.");
     };
 
+    let is_owner = created_by.is_some_and(|owner| owner == user.id) || is_coordinator(&user);
     let is_ended = now > end;
     let joined = is_ended
-        || user.as_ref().is_some_and(|u| {
-            is_coordinator(u)
-                || conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM contest_participants WHERE contest_id = ? AND user_id = ?",
-                        params![id, u.id],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .unwrap_or(0)
-                    > 0
-        });
+        || is_owner
+        || conn
+            .query_row(
+                "SELECT COUNT(*) FROM contest_participants WHERE contest_id = ? AND user_id = ?",
+                params![id, user.id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
 
     if !joined {
         return err_resp(403, "Enter the contest access code to view this contest.");
@@ -822,7 +827,7 @@ async fn get_contest(
         .filter_map(Result::ok)
         .collect();
 
-    let show_code = user.as_ref().is_some_and(is_coordinator);
+    let show_code = is_owner;
     let status = if now < start { "upcoming" } else if now <= end { "running" } else { "ended" };
 
     Json(json!({
