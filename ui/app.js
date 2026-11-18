@@ -78,6 +78,7 @@ function showView(view) {
   if (!state.user && view !== 'login-gate') {
     view = 'login-gate';
   }
+  $('app-topbar').classList.toggle('hidden', !state.user);
   $('view-login-gate').classList.toggle('hidden', view !== 'login-gate');
   $('view-hub').classList.toggle('hidden', view !== 'hub');
   $('view-coordinator').classList.toggle('hidden', view !== 'coordinator');
@@ -610,13 +611,6 @@ function wireEvents() {
 
   $('contest-select').addEventListener('change', (e) => openContest(Number(e.target.value)));
 
-  document.querySelectorAll('.demo-fill').forEach((b) => {
-    b.addEventListener('click', () => {
-      $('login-email').value = b.dataset.e;
-      $('login-password').value = b.dataset.p;
-    });
-  });
-
   // Google Auth (Tauri uses system browser + loopback; Web uses standard OAuth redirect)
   $('btn-google-signin').addEventListener('click', async () => {
     try {
@@ -637,8 +631,8 @@ function wireEvents() {
         return;
       }
 
-      const email = $('login-email').value.trim() || 'siam@gmail.com';
-      await api('/api/auth/google', { method: 'POST', body: { email, displayName: email.split('@')[0] } });
+      const email = 'siam@gmail.com';
+      await api('/api/auth/google', { method: 'POST', body: { email, displayName: 'siam' } });
       await completeLoginAndEnterHub(`Signed in with Google (${email})!`);
     } catch (e) {
       toast(e.message, 'error');
@@ -658,31 +652,6 @@ function wireEvents() {
       }
     });
   }
-
-  $('btn-email-login').addEventListener('click', async () => {
-    try {
-      await api('/api/auth/login', {
-        method: 'POST',
-        body: { email: $('login-email').value, password: $('login-password').value },
-      });
-      await completeLoginAndEnterHub('Signed in!');
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  });
-
-  $('btn-email-register').addEventListener('click', async () => {
-    try {
-      const email = $('login-email').value.trim();
-      await api('/api/auth/register', {
-        method: 'POST',
-        body: { email, displayName: email.split('@')[0], password: $('login-password').value },
-      });
-      await completeLoginAndEnterHub('Account created!');
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  });
 
   $('btn-join-contest').addEventListener('click', async () => {
     try {
