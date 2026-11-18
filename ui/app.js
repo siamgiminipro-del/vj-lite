@@ -703,6 +703,37 @@ function wireEvents() {
     const isLoc = e.target.value === 'local';
     $('cp-extid-wrap').classList.toggle('hidden', isLoc);
     $('cp-tests-wrap').classList.toggle('hidden', !isLoc);
+    state.fetchedSamples = [];
+  });
+
+  $('btn-fetch-problem').addEventListener('click', async () => {
+    const plat = $('cp-platform').value;
+    const extId = $('cp-extid').value.trim();
+    if (!extId) return toast('Enter a problem ID or URL first.', 'error');
+    const btn = $('btn-fetch-problem');
+    btn.disabled = true;
+    btn.textContent = 'Fetching...';
+    try {
+      const res = await api('/api/problems/fetch', {
+        method: 'POST',
+        body: { platform: plat, externalId: extId },
+      });
+      const p = res.problem;
+      $('cp-title').value = p.title || '';
+      $('cp-statement').value = p.statement || '';
+      state.fetchedSamples = p.sample_tests || [];
+      toast(
+        p.fetched_statement
+          ? `Fetched "${p.title}" (${state.fetchedSamples.length} sample(s))!`
+          : `Fetched title "${p.title}" (full HTML blocked by OJ, link added).`,
+        'success'
+      );
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '⚡ Fetch';
+    }
   });
 
   $('create-problem-form').addEventListener('submit', async (e) => {
@@ -716,11 +747,15 @@ function wireEvents() {
           sourceType: isLoc ? 'local' : 'external',
           platform: plat,
           externalId: $('cp-extid').value.trim(),
-          title: $('cp-title').value.trim(),
-          statement: $('cp-statement').value.trim(),
-          sampleTests: isLoc ? [{ input: $('cp-sin').value, output: $('cp-sout').value }] : [],
+          title: $('cp-title').value.trim() || null,
+          statement: $('cp-statement').value.trim() || null,
+          sampleTests: isLoc
+            ? [{ input: $('cp-sin').value, output: $('cp-sout').value }]
+            : state.fetchedSamples || [],
         },
       });
+      state.fetchedSamples = [];
+      $('create-problem-form').reset();
       toast('Problem saved!', 'success');
       await openCreateContestView();
     } catch (err) {

@@ -170,16 +170,19 @@
               </label>
               <label id="cp-extid-wrap">
                 Problem ID or URL
-                <input id="cp-extid" type="text" placeholder="e.g. 4A, dp_a, 1094, or full URL" />
+                <div class="row-gap">
+                  <input id="cp-extid" type="text" placeholder="e.g. 4A, dp_a, 1094, or URL" style="flex:1" />
+                  <button id="btn-fetch-problem" class="btn btn-outline btn-sm" type="button">⚡ Fetch</button>
+                </div>
               </label>
             </div>
             <label>
-              Problem Title
-              <input id="cp-title" type="text" required placeholder="e.g. Dynamic Programming — Frog 1" />
+              Problem Title (auto-fetched if left blank for external OJs)
+              <input id="cp-title" type="text" placeholder="e.g. Dynamic Programming — Frog 1" />
             </label>
             <label>
-              Statement
-              <textarea id="cp-statement" rows="3" placeholder="Problem statement..."></textarea>
+              Statement (auto-fetched if available)
+              <textarea id="cp-statement" rows="3" placeholder="Leave blank to auto-fetch or paste statement..."></textarea>
             </label>
             <div id="cp-tests-wrap" class="two-col hidden">
               <label>

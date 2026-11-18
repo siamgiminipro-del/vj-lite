@@ -4,7 +4,7 @@ use crate::auth::{
 };
 use crate::db::now_unix;
 use crate::local_judge::{judge_local, TestCase};
-use crate::oj_sync::parse_oj_problem;
+use crate::oj_sync::{fetch_oj_problem_details, parse_oj_problem};
 use crate::scoreboard::{
     compute_standings, ContestMeta, ScoreboardProblem, SubmissionForScore,
 };
@@ -87,6 +87,7 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
         .route("/api/oj/link", post(link_oj))
+        .route("/api/problems/fetch", post(fetch_problem_endpoint))
         .route("/api/problems", get(list_problems).post(create_problem))
         .route("/api/contests", get(list_contests).post(create_contest))
         .route("/api/contests/join", post(join_contest_by_code))
@@ -428,13 +429,34 @@ async fn list_problems(State(state): State<AppState>) -> Response {
 }
 
 #[derive(Deserialize)]
+struct FetchProblemReq {
+    platform: String,
+    #[serde(rename = "externalId")]
+    external_id: String,
+}
+
+async fn fetch_problem_endpoint(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<FetchProblemReq>,
+) -> Response {
+    if let Err(r) = require_user(&state, &headers) {
+        return r;
+    }
+    match fetch_oj_problem_details(&state.http, &body.platform, &body.external_id, &state.cf_api_base).await {
+        Ok(details) => Json(json!({ "problem": details })).into_response(),
+        Err((s, m)) => err_resp(s, m),
+    }
+}
+
+#[derive(Deserialize)]
 struct CreateProblemReq {
     #[serde(rename = "sourceType")]
     source_type: String,
     platform: Option<String>,
     #[serde(rename = "externalId")]
     external_id: Option<String>,
-    title: String,
+    title: Option<String>,
     statement: Option<String>,
     #[serde(rename = "sampleTests")]
     sample_tests: Option<Vec<TestCase>>,
@@ -458,10 +480,11 @@ async fn create_problem(
 
     let now = now_unix();
     let source_type = if body.source_type == "local" { "local" } else { "external" };
-    let samples = serde_json::to_string(&body.sample_tests.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+    let mut samples_vec = body.sample_tests.unwrap_or_default();
     let hidden = serde_json::to_string(&body.hidden_tests.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
-    let tl = body.time_limit_ms.unwrap_or(2000);
-    let ml = body.memory_limit_mb.unwrap_or(256);
+    let mut tl = body.time_limit_ms.unwrap_or(2000);
+    let mut ml = body.memory_limit_mb.unwrap_or(256);
+    let mut final_title = body.title.unwrap_or_default().trim().to_string();
 
     let (platform, ext_id, stmt_text) = if source_type == "external" {
         let plat = body.platform.as_deref().unwrap_or("codeforces");
@@ -469,23 +492,43 @@ async fn create_problem(
         let Some(parsed) = parse_oj_problem(plat, raw) else {
             return err_resp(400, "Invalid OJ problem ID or URL.");
         };
-        let default_stmt = format!(
-            "Solve {} problem {} ({}) and submit via Local WebView.",
-            parsed.platform, parsed.external_id, parsed.problem_url
-        );
-        (
-            Some(parsed.platform),
-            Some(parsed.external_id),
-            body.statement.filter(|s| !s.trim().is_empty()).unwrap_or(default_stmt),
-        )
+
+        let mut stmt_val = body.statement.unwrap_or_default().trim().to_string();
+        if final_title.is_empty() || stmt_val.is_empty() {
+            if let Ok(fetched) = fetch_oj_problem_details(&state.http, &parsed.platform, raw, &state.cf_api_base).await {
+                if final_title.is_empty() {
+                    final_title = fetched.title;
+                }
+                if stmt_val.is_empty() {
+                    stmt_val = fetched.statement;
+                }
+                if samples_vec.is_empty() && !fetched.sample_tests.is_empty() {
+                    samples_vec = fetched
+                        .sample_tests
+                        .into_iter()
+                        .map(|s| TestCase { input: s.input, output: s.output })
+                        .collect();
+                }
+                tl = fetched.time_limit_ms;
+                ml = fetched.memory_limit_mb;
+            }
+        }
+        if final_title.is_empty() {
+            final_title = format!("{} {}", parsed.platform.to_uppercase(), parsed.external_id);
+        }
+        if stmt_val.is_empty() {
+            stmt_val = format!("Solve {} problem {} ({}).", parsed.platform, parsed.external_id, parsed.problem_url);
+        }
+        (Some(parsed.platform), Some(parsed.external_id), stmt_val)
     } else {
         let s = body.statement.unwrap_or_default();
-        if s.trim().is_empty() {
-            return err_resp(400, "Problem statement is required.");
+        if final_title.is_empty() || s.trim().is_empty() {
+            return err_resp(400, "Problem title and statement are required for local problems.");
         }
         (Some("local".to_string()), None, s)
     };
 
+    let samples = serde_json::to_string(&samples_vec).unwrap_or_else(|_| "[]".into());
     let conn = state.db.lock().unwrap();
     conn.execute(
         "INSERT INTO problems (source_type, platform, external_id, title, statement, sample_tests_json, hidden_tests_json, time_limit_ms, memory_limit_mb, created_by, created_at)
@@ -494,7 +537,7 @@ async fn create_problem(
             source_type,
             platform,
             ext_id,
-            body.title.trim(),
+            final_title,
             stmt_text,
             samples,
             hidden,

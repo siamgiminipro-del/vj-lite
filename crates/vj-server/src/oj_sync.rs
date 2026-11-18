@@ -396,3 +396,254 @@ fn upsert_external_submission(
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FetchedSample {
+    pub input: String,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FetchedProblemDetails {
+    pub platform: String,
+    pub external_id: String,
+    pub title: String,
+    pub statement: String,
+    pub sample_tests: Vec<FetchedSample>,
+    pub time_limit_ms: i64,
+    pub memory_limit_mb: i64,
+    pub problem_url: String,
+    pub fetched_statement: bool,
+}
+
+fn decode_html_entities(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&le;", "<=")
+        .replace("&ge;", ">=")
+}
+
+fn strip_html_tags(html: &str) -> String {
+    let normalized = html
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n")
+        .replace("</p>", "\n\n")
+        .replace("</li>", "\n")
+        .replace("</div>", "\n");
+    let mut out = String::with_capacity(normalized.len());
+    let mut in_tag = false;
+    for ch in normalized.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    let decoded = decode_html_entities(&out);
+    decoded
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn extract_between<'a>(haystack: &'a str, start_pat: &str, end_pat: &str) -> Option<&'a str> {
+    let s_idx = haystack.find(start_pat)? + start_pat.len();
+    let rest = &haystack[s_idx..];
+    let e_idx = rest.find(end_pat)?;
+    Some(&rest[..e_idx])
+}
+
+fn extract_all_pre(html: &str) -> Vec<String> {
+    let mut res = Vec::new();
+    let mut rest = html;
+    while let Some(s) = rest.find("<pre") {
+        let after_open = &rest[s..];
+        let Some(gt) = after_open.find('>') else { break };
+        let content_start = &after_open[gt + 1..];
+        let Some(end) = content_start.find("</pre>") else { break };
+        let raw = &content_start[..end];
+        let clean = decode_html_entities(
+            &raw.replace("<br>", "\n")
+                .replace("<br/>", "\n")
+                .replace("<br />", "\n")
+                .replace("</div>", "\n"),
+        );
+        let stripped = clean
+            .split('<')
+            .enumerate()
+            .map(|(i, part)| if i == 0 { part } else { part.split_once('>').map(|x| x.1).unwrap_or("") })
+            .collect::<String>();
+        res.push(stripped.trim().to_string());
+        rest = &content_start[end + 6..];
+    }
+    res
+}
+
+pub async fn fetch_oj_problem_details(
+    http: &reqwest::Client,
+    platform: &str,
+    raw_identifier: &str,
+    cf_api_base: &str,
+) -> Result<FetchedProblemDetails, (u16, String)> {
+    let parsed = parse_oj_problem(platform, raw_identifier)
+        .ok_or((400u16, "Invalid problem ID or URL for the selected platform.".to_string()))?;
+
+    let mut title = format!("{} {}", parsed.platform.to_uppercase(), parsed.external_id);
+    let mut statement = format!(
+        "Open full statement on {} ({}) and submit via Local WebView or Direct Submit.",
+        parsed.platform, parsed.problem_url
+    );
+    let mut samples = Vec::new();
+    let mut time_limit_ms = 2000i64;
+    let mut memory_limit_mb = 256i64;
+    let mut fetched_statement = false;
+
+    match parsed.platform.as_str() {
+        "codeforces" => {
+            // 1. Always fetch exact Title from official Codeforces API
+            let pos = parsed.external_id.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(0);
+            let (cid_str, idx_str) = parsed.external_id.split_at(pos);
+            let api_url = format!("{cf_api_base}/contest.standings?contestId={cid_str}&from=1&count=1");
+            if let Ok(resp) = http.get(&api_url).send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(probs) = json["result"]["problems"].as_array() {
+                        if let Some(p) = probs.iter().find(|p| p["index"].as_str().unwrap_or("").eq_ignore_ascii_case(idx_str)) {
+                            if let Some(name) = p["name"].as_str() {
+                                title = name.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+            // 2. Try fetching HTML statement (gracefully skips if Cloudflare blocks)
+            if let Ok(resp) = http
+                .get(&parsed.problem_url)
+                .header("User-Agent", "Mozilla/5.0")
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    if let Ok(html) = resp.text().await {
+                        if let Some(stmt_div) = extract_between(&html, "<div class=\"problem-statement\">", "<div class=\"sample-tests\">") {
+                            let clean = strip_html_tags(stmt_div);
+                            if clean.len() > 30 {
+                                statement = clean.chars().take(4000).collect();
+                                fetched_statement = true;
+                            }
+                        }
+                        if let Some(sample_div) = extract_between(&html, "<div class=\"sample-tests\">", "<div class=\"note\">")
+                            .or_else(|| extract_between(&html, "<div class=\"sample-tests\">", "</div></div></div>"))
+                        {
+                            let pres = extract_all_pre(sample_div);
+                            for pair in pres.chunks(2) {
+                                if pair.len() == 2 {
+                                    samples.push(FetchedSample {
+                                        input: format!("{}\n", pair[0]),
+                                        output: format!("{}\n", pair[1]),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "atcoder" => {
+            if let Ok(resp) = http
+                .get(&parsed.problem_url)
+                .header("User-Agent", "Mozilla/5.0")
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    if let Ok(html) = resp.text().await {
+                        if let Some(t) = extract_between(&html, "<span class=\"h2\">", "<a")
+                            .or_else(|| extract_between(&html, "<title>", "</title>"))
+                        {
+                            let clean_t = strip_html_tags(t).replace('\n', " ");
+                            if !clean_t.is_empty() {
+                                title = clean_t;
+                            }
+                        }
+                        if let Some(en) = extract_between(&html, "<span class=\"lang-en\">", "<span class=\"lang-ja\">")
+                            .or_else(|| extract_between(&html, "<div id=\"task-statement\">", "</div>\n\t\t\t</div>"))
+                        {
+                            let clean = strip_html_tags(en);
+                            if clean.len() > 20 {
+                                statement = clean.chars().take(4000).collect();
+                                fetched_statement = true;
+                            }
+                            let pres = extract_all_pre(en);
+                            for pair in pres.chunks(2) {
+                                if pair.len() == 2 {
+                                    samples.push(FetchedSample {
+                                        input: format!("{}\n", pair[0]),
+                                        output: format!("{}\n", pair[1]),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "cses" => {
+            if let Ok(resp) = http
+                .get(&parsed.problem_url)
+                .header("User-Agent", "Mozilla/5.0")
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    if let Ok(html) = resp.text().await {
+                        if let Some(t) = extract_between(&html, "<h1>", "</h1>") {
+                            let clean_t = strip_html_tags(t);
+                            if !clean_t.is_empty() {
+                                title = clean_t;
+                            }
+                        }
+                        if let Some(md) = extract_between(&html, "<div class=\"md\">", "</div>") {
+                            let clean = strip_html_tags(md);
+                            if clean.len() > 20 {
+                                statement = clean.chars().take(4000).collect();
+                                fetched_statement = true;
+                            }
+                            let pres = extract_all_pre(md);
+                            for pair in pres.chunks(2) {
+                                if pair.len() == 2 {
+                                    samples.push(FetchedSample {
+                                        input: format!("{}\n", pair[0]),
+                                        output: format!("{}\n", pair[1]),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            time_limit_ms = 1000;
+            memory_limit_mb = 512;
+        }
+        _ => {}
+    }
+
+    Ok(FetchedProblemDetails {
+        platform: parsed.platform,
+        external_id: parsed.external_id,
+        title,
+        statement,
+        sample_tests: samples,
+        time_limit_ms,
+        memory_limit_mb,
+        problem_url: parsed.problem_url,
+        fetched_statement,
+    })
+}
