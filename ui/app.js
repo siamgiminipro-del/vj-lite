@@ -53,8 +53,22 @@ async function api(url, opts = {}) {
   return data;
 }
 
-function isTauri() {
-  return Boolean(window.__TAURI__?.core?.invoke);
+function tauriInvoke(cmd, args = {}) {
+  const fn = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
+  if (!fn) throw new Error('Tauri IPC not available');
+  return fn(cmd, args);
+}
+
+function inTauriApp() {
+  return Boolean(window.isTauri || window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke);
+}
+
+function uiLog(msg) {
+  if (inTauriApp()) {
+    try {
+      tauriInvoke('ui_log', { msg: String(msg) }).catch(() => {});
+    } catch (_) {}
+  }
 }
 
 function fmtDur(sec) {
@@ -356,7 +370,7 @@ function renderActiveProblem() {
   $('ext-actions').classList.toggle('hidden', !isExt);
   $('local-actions').classList.toggle('hidden', isExt);
   if (isExt) {
-    $('ext-bridge-title').textContent = isTauri()
+    $('ext-bridge-title').textContent = inTauriApp()
       ? `${p.platform.toUpperCase()} • Local Background WebView Ready`
       : `${p.platform.toUpperCase()} • Direct Submit + API Sync`;
     $('btn-submit-local-alt').classList.toggle('hidden', !p.hasLocalTests);
@@ -542,8 +556,8 @@ async function handleExternalSubmit() {
     body: { problemId: prob.id, language, code },
   });
 
-  if (isTauri()) {
-    await window.__TAURI__.core.invoke('submit_via_webview', {
+  if (inTauriApp()) {
+    await tauriInvoke('submit_via_webview', {
       platform: prep.platform,
       submitUrl: prep.submitUrl,
       language,
@@ -613,20 +627,20 @@ function wireEvents() {
 
   // Google Auth (Tauri uses system browser + loopback; Web uses standard OAuth redirect)
   $('btn-google-signin').addEventListener('click', async () => {
+    uiLog(`btn-google-signin clicked, inTauriApp=${inTauriApp()}, API_BASE=${API_BASE}`);
     const btn = $('btn-google-signin');
     const prevHtml = btn.innerHTML;
     btn.disabled = true;
     btn.textContent = 'Opening Google Sign-In...';
     try {
       const cfg = await api('/api/auth/config');
+      uiLog(`auth/config: ${JSON.stringify(cfg)}`);
       if (cfg.supabaseEnabled && cfg.supabaseUrl) {
-        if (isTauri()) {
-          await window.__TAURI__.core.invoke('start_supabase_google_oauth', {
+        if (inTauriApp()) {
+          await tauriInvoke('start_supabase_google_oauth', {
             supabaseUrl: cfg.supabaseUrl,
           });
           toast('Opened default browser — complete Google Sign-In there.', 'info');
-          btn.disabled = false;
-          btn.innerHTML = prevHtml;
           return;
         }
         const redirectTo = window.location.origin;
@@ -641,6 +655,7 @@ function wireEvents() {
       await api('/api/auth/google', { method: 'POST', body: { email, displayName: 'siam' } });
       await completeLoginAndEnterHub(`Signed in with Google (${email})!`);
     } catch (e) {
+      uiLog(`btn-google-signin error: ${e?.stack || e?.message || e}`);
       toast(e.message || 'Google Sign-In failed.', 'error');
     } finally {
       btn.disabled = false;
@@ -690,8 +705,8 @@ function wireEvents() {
     try {
       const handle = $('oj-handle-input').value.trim();
       const password = $('oj-pass-input').value;
-      if (isTauri() && password) {
-        await window.__TAURI__.core.invoke('save_oj_credentials', {
+      if (inTauriApp() && password) {
+        await tauriInvoke('save_oj_credentials', {
           platform: state.selectedOjTab,
           handle,
           password,
@@ -869,10 +884,19 @@ async function handleSupabaseOAuthReturn() {
   }
 }
 
+window.addEventListener('error', (ev) => uiLog(`window.error: ${ev.message} @ ${ev.filename}:${ev.lineno}`));
+window.addEventListener('unhandledrejection', (ev) => uiLog(`unhandledrejection: ${ev.reason}`));
+
 (async function init() {
+  uiLog(`init start: href=${location.href}, protocol=${location.protocol}, API_BASE=${API_BASE}, hasGlobal=${Boolean(window.__TAURI__?.core?.invoke)}, hasInternals=${Boolean(window.__TAURI_INTERNALS__?.invoke)}`);
   wireEvents();
+  uiLog('wireEvents complete');
   await handleSupabaseOAuthReturn();
-  await refreshMe();
+  try {
+    await refreshMe();
+  } catch (e) {
+    uiLog(`refreshMe error: ${e?.message || e}`);
+  }
   if (state.user) {
     await loadContests();
     showView('hub');

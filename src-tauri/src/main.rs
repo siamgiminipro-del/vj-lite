@@ -106,7 +106,13 @@ async fn submit_via_webview(
     Ok(())
 }
 
+#[tauri::command]
+fn ui_log(msg: String) {
+    eprintln!("[vj-ui] {msg}");
+}
+
 fn open_system_browser(url: &str) -> Result<(), String> {
+    eprintln!("[vj-desktop] open_system_browser: {url}");
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open").arg(url).status();
     #[cfg(target_os = "windows")]
@@ -209,7 +215,15 @@ if (tok) {
 
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            eprintln!(
+                "[vj-desktop] setup complete, windows={:?}",
+                app.webview_windows().keys().collect::<Vec<_>>()
+            );
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            ui_log,
             save_oj_credentials,
             get_oj_credentials,
             show_oj_window,
