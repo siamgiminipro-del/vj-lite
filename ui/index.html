@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VJ-Lite — Multi-OJ Contest Platform</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="brand">
+        <img src="/logo.svg" alt="VJ-Lite Logo" class="brand-logo" />
+        <div>
+          <div class="brand-name">VJ-Lite</div>
+          <div class="brand-sub">Multi-OJ Virtual Judge • Rust + Tauri</div>
+        </div>
+      </div>
+      <span id="capacity-badge" class="pill">0 / 50 Users</span>
+    </div>
+
+    <div class="topbar-center">
+      <select id="contest-select" class="select-contest"></select>
+      <span id="contest-timer-pill" class="pill pill-indigo">--:--:--</span>
+    </div>
+
+    <div class="topbar-right">
+      <button id="btn-nav-onboarding" class="btn btn-outline btn-sm" type="button">Access Code &amp; OJs</button>
+      <button id="btn-nav-coordinator" class="btn btn-outline btn-sm hidden" type="button">Coordinator Studio</button>
+      <div id="user-controls" class="row-gap"></div>
+    </div>
+  </header>
+
+  <div id="toast-container" class="toast-container"></div>
+
+  <main class="container">
+    <!-- SCREEN 1: Sign Up (Google) + Join Contest (Access Code) + Multi-OJ Local Bridge -->
+    <section id="view-onboarding" class="hidden">
+      <div class="onboarding-grid">
+        <div class="card">
+          <span class="pill pill-indigo">Step 1 • Sign In &amp; Enter Contest</span>
+          <h1 class="card-title">Welcome to VJ-Lite</h1>
+          <p class="muted">Sign up with Google in one click, then enter your contest access code.</p>
+
+          <div class="form-stack" style="margin-top:1rem">
+            <button id="btn-google-signin" class="btn btn-google btn-block" type="button">
+              <span class="google-badge">G</span> Continue with Google
+            </button>
+
+            <div class="divider">OR EMAIL / ACCESS CODE</div>
+
+            <div id="auth-fields" class="form-stack">
+              <label>
+                Email
+                <input id="login-email" type="email" placeholder="you@gmail.com" value="alice@gmail.com" />
+              </label>
+              <label>
+                Password
+                <input id="login-password" type="password" placeholder="••••••" value="alice123" />
+              </label>
+              <div class="two-col">
+                <button id="btn-email-login" class="btn btn-outline" type="button">Sign In</button>
+                <button id="btn-email-register" class="btn btn-outline" type="button">Sign Up</button>
+              </div>
+              <div class="row-gap">
+                <span class="muted" style="font-size:0.75rem">Demo:</span>
+                <button class="btn btn-sm btn-outline demo-fill" data-e="admin@vjclub.local" data-p="admin123" type="button">Coordinator</button>
+                <button class="btn btn-sm btn-outline demo-fill" data-e="alice@gmail.com" data-p="alice123" type="button">Alice</button>
+              </div>
+            </div>
+
+            <div class="divider">JOIN CONTEST</div>
+            <label>
+              Contest Access Code
+              <input id="join-access-code" type="text" placeholder="CLUB-2026-W1" value="CLUB-2026-W1" />
+            </label>
+            <button id="btn-join-contest" class="btn btn-primary btn-block" type="button">Enter Contest Room →</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <span class="pill pill-emerald">Step 2 • Device-Only Storage</span>
+          <h2 class="card-title">Multi-OJ Local Bridge</h2>
+          <p class="muted">Connect any supported judge locally. Passwords stay in your OS Keychain / browser — never sent to our server.</p>
+
+          <div class="row-gap" style="margin:0.9rem 0">
+            <button class="btn btn-sm btn-primary oj-tab-btn" data-oj="codeforces" type="button">Codeforces</button>
+            <button class="btn btn-sm oj-tab-btn" data-oj="atcoder" type="button">AtCoder</button>
+            <button class="btn btn-sm oj-tab-btn" data-oj="cses" type="button">CSES</button>
+            <button class="btn btn-sm oj-tab-btn" data-oj="codechef" type="button">CodeChef</button>
+          </div>
+
+          <form id="oj-local-form" class="form-stack">
+            <label>
+              <span id="oj-handle-label">Codeforces Handle</span>
+              <input id="oj-handle-input" type="text" required placeholder="e.g. siam_cf" />
+            </label>
+            <label>
+              Password / Session (Stored Locally on This Device Only)
+              <input id="oj-pass-input" type="password" placeholder="Optional — saved in OS Keychain" />
+            </label>
+            <div id="oj-status-banner" class="callout callout-emerald">
+              ✓ Local WebView / Keychain Ready • Handles synced with contest server
+            </div>
+            <button class="btn btn-outline btn-block" type="submit">Save Locally &amp; Link Handle</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCREEN 2: Coordinator Studio -->
+    <section id="view-coordinator" class="hidden">
+      <div class="row-between" style="margin-bottom:1rem">
+        <div>
+          <h1 style="margin:0;font-size:1.4rem">Coordinator Studio</h1>
+          <p class="muted" style="margin:0">Create contests with access codes, import multi-OJ problems, and review past 10 contests.</p>
+        </div>
+        <button id="btn-back-contest" class="btn btn-outline btn-sm" type="button">← Back to Contest</button>
+      </div>
+
+      <div class="two-col" style="grid-template-columns: 420px 1fr; align-items:start">
+        <div class="card">
+          <h2 style="margin-top:0;font-size:1.05rem">Contest Settings</h2>
+          <form id="create-contest-form" class="form-stack">
+            <label>
+              Contest Title
+              <input id="cc-title" type="text" required placeholder="Club Weekly Practice #2" />
+            </label>
+            <label>
+              Participant Access Code
+              <input id="cc-code" type="text" placeholder="Leave blank to auto-generate (e.g. CLUB-9X4K)" />
+            </label>
+            <div class="two-col">
+              <label>
+                Duration (min)
+                <input id="cc-duration" type="number" value="120" min="10" />
+              </label>
+              <label>
+                ICPC Penalty (min)
+                <input id="cc-penalty" type="number" value="20" min="0" />
+              </label>
+            </div>
+            <label>
+              Scoreboard Freeze (mins before end)
+              <input id="cc-freeze" type="number" value="30" min="0" />
+            </label>
+            <div>
+              <div class="muted" style="font-size:0.8rem;margin-bottom:0.4rem">Select Problems (Aliased A, B, C...)</div>
+              <div id="cc-problem-list" class="form-stack" style="max-height:170px;overflow-y:auto;gap:0.4rem"></div>
+            </div>
+            <button class="btn btn-emerald btn-block" type="submit">Publish Contest &amp; Copy Code</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="row-between" style="margin-bottom:0.9rem">
+            <h2 style="margin:0;font-size:1.05rem">Add Multi-OJ or Local Problem</h2>
+          </div>
+          <form id="create-problem-form" class="form-stack">
+            <div class="two-col">
+              <label>
+                Problem Source / Platform
+                <select id="cp-platform">
+                  <option value="codeforces">Codeforces</option>
+                  <option value="atcoder">AtCoder</option>
+                  <option value="cses">CSES</option>
+                  <option value="codechef">CodeChef</option>
+                  <option value="local">Local Custom Problem (Our Server)</option>
+                </select>
+              </label>
+              <label id="cp-extid-wrap">
+                Problem ID or URL
+                <input id="cp-extid" type="text" placeholder="e.g. 4A, dp_a, 1094, or full URL" />
+              </label>
+            </div>
+            <label>
+              Problem Title
+              <input id="cp-title" type="text" required placeholder="e.g. Dynamic Programming — Frog 1" />
+            </label>
+            <label>
+              Statement
+              <textarea id="cp-statement" rows="3" placeholder="Problem statement..."></textarea>
+            </label>
+            <div id="cp-tests-wrap" class="two-col hidden">
+              <label>
+                Sample Input
+                <textarea id="cp-sin" rows="2"></textarea>
+              </label>
+              <label>
+                Sample Output
+                <textarea id="cp-sout" rows="2"></textarea>
+              </label>
+            </div>
+            <button class="btn btn-primary" type="submit">Save Problem to Bank</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCREENS 3 & 4: Active Contest Workspace, Submissions, Standings, Clarifications -->
+    <section id="view-contest">
+      <div class="row-between" style="margin-bottom:0.9rem;flex-wrap:wrap">
+        <div>
+          <h1 id="contest-title" style="margin:0;font-size:1.35rem">Loading...</h1>
+          <p id="contest-desc" class="muted" style="margin:0.2rem 0 0"></p>
+        </div>
+        <div class="row-gap">
+          <span id="contest-access-pill" class="pill pill-indigo hidden"></span>
+          <span id="contest-status-pill" class="pill">...</span>
+          <span id="contest-rules-pill" class="pill">Penalty: 20m</span>
+        </div>
+      </div>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="problems" type="button">Problems &amp; Submit</button>
+        <button class="tab" data-tab="submissions" type="button">Submissions</button>
+        <button class="tab" data-tab="standings" type="button">ICPC Standings</button>
+        <button class="tab" data-tab="clarifications" type="button">Clarifications</button>
+      </nav>
+
+      <!-- Tab 1: Multi-OJ Workspace -->
+      <div id="tab-problems" class="tab-panel active">
+        <div class="workspace-grid">
+          <aside class="card">
+            <div class="muted" style="font-size:0.75rem;font-weight:700">PROBLEMS</div>
+            <ul id="problem-list" class="problem-list"></ul>
+          </aside>
+
+          <article class="card">
+            <div id="problem-detail">
+              <div class="row-between" style="border-bottom:1px solid var(--border);padding-bottom:0.8rem;margin-bottom:1rem">
+                <div>
+                  <div class="row-gap" style="margin-bottom:0.4rem">
+                    <span id="prob-alias" class="alias-badge">A</span>
+                    <span id="prob-platform-pill" class="pill pill-cyan">Codeforces 4A</span>
+                  </div>
+                  <h2 id="prob-title" style="margin:0;font-size:1.3rem">Problem</h2>
+                </div>
+                <div id="prob-limits" class="muted" style="font-family:var(--mono);font-size:0.78rem">1000 ms • 256 MB</div>
+              </div>
+              <p id="prob-statement" class="pre-wrap" style="color:var(--text-sec);font-size:0.92rem"></p>
+              <div id="prob-samples" class="samples-grid"></div>
+            </div>
+          </article>
+
+          <section class="card">
+            <div class="row-between" style="margin-bottom:0.75rem">
+              <h2 style="margin:0;font-size:1rem">Solution</h2>
+              <select id="language-select">
+                <option value="cpp">C++17 (GCC / Clang)</option>
+                <option value="python3">Python 3</option>
+                <option value="javascript">JavaScript (Node)</option>
+              </select>
+            </div>
+            <textarea id="code-editor" class="code-editor" spellcheck="false" placeholder="#include <bits/stdc++.h>&#10;using namespace std;&#10;int main() { ... }"></textarea>
+
+            <div id="ext-actions" class="form-stack" style="margin-top:0.75rem">
+              <div class="callout callout-indigo">
+                <strong id="ext-bridge-title">Local Background WebView Ready</strong>
+                <div id="ext-bridge-sub" style="margin-top:0.2rem">Submits via your device WebView &amp; syncs verdict via official OJ API.</div>
+              </div>
+              <button id="btn-submit-webview" class="btn btn-primary btn-block" type="button">⚡ Submit in Background</button>
+              <button id="btn-submit-local-alt" class="btn btn-outline btn-block hidden" type="button">🖥️ Judge Locally on Our Server</button>
+              <button id="btn-sync-verdicts" class="btn btn-outline btn-block" type="button">↻ Sync Verdicts Now</button>
+            </div>
+
+            <div id="local-actions" class="form-stack hidden" style="margin-top:0.75rem">
+              <div class="callout callout-emerald">
+                <strong>Local Sandboxed Judge</strong>
+                <div>Compiles &amp; runs directly against sample + hidden tests.</div>
+              </div>
+              <button id="btn-submit-local" class="btn btn-emerald btn-block" type="button">Submit Solution (Local Judge)</button>
+            </div>
+
+            <div id="last-verdict-box" class="callout callout-emerald hidden" style="margin-top:0.75rem"></div>
+          </section>
+        </div>
+      </div>
+
+      <!-- Tab 2: Submissions -->
+      <div id="tab-submissions" class="tab-panel">
+        <div class="card">
+          <div class="row-between" style="margin-bottom:0.8rem">
+            <h2 style="margin:0;font-size:1.05rem">Submissions</h2>
+            <div class="row-gap">
+              <label class="row-gap" style="font-size:0.82rem;cursor:pointer">
+                <input id="filter-mine" type="checkbox" /> My submissions only
+              </label>
+              <button id="btn-refresh-subs" class="btn btn-sm btn-outline" type="button">Refresh</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th><th>When</th><th>User</th><th>Problem</th><th>Platform</th><th>Lang</th><th>Verdict</th><th>Time</th><th>Code</th>
+                </tr>
+              </thead>
+              <tbody id="subs-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 3: ICPC Standings -->
+      <div id="tab-standings" class="tab-panel">
+        <div class="card">
+          <div class="row-between" style="margin-bottom:0.85rem;flex-wrap:wrap">
+            <div>
+              <h2 style="margin:0;font-size:1.1rem">Live ICPC Standings</h2>
+              <span id="standings-freeze-note" class="muted"></span>
+            </div>
+            <div class="row-gap">
+              <button id="btn-sync-all" class="btn btn-sm btn-emerald hidden" type="button">↻ Sync All OJs</button>
+              <button id="btn-refresh-standings" class="btn btn-sm btn-outline" type="button">Refresh</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead id="standings-thead"></thead>
+              <tbody id="standings-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 4: Clarifications -->
+      <div id="tab-clarifications" class="tab-panel">
+        <div class="two-col" style="grid-template-columns:340px 1fr;align-items:start">
+          <div class="card">
+            <h2 style="margin-top:0;font-size:1rem">Ask Clarification</h2>
+            <form id="clar-form" class="form-stack">
+              <label>
+                Problem
+                <select id="clar-alias"><option value="">General</option></select>
+              </label>
+              <label>
+                Message
+                <textarea id="clar-question" rows="3" required></textarea>
+              </label>
+              <label id="clar-ann-wrap" class="row-gap hidden" style="flex-direction:row;cursor:pointer">
+                <input id="clar-is-ann" type="checkbox" /> Post as Announcement
+              </label>
+              <button class="btn btn-primary" type="submit">Send</button>
+            </form>
+          </div>
+          <div class="card">
+            <h2 style="margin-top:0;font-size:1rem">Q&amp;A &amp; Announcements</h2>
+            <div id="clar-list" class="form-stack"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="modal-code" class="modal hidden">
+    <div class="modal-card">
+      <div class="row-between" style="margin-bottom:0.75rem">
+        <h2 id="code-modal-title" style="margin:0;font-size:1.05rem">Code</h2>
+        <button id="btn-close-code" class="btn btn-sm btn-outline" type="button">Close</button>
+      </div>
+      <pre id="code-modal-body" style="background:var(--canvas);padding:0.9rem;border-radius:8px;overflow-x:auto;font-family:var(--mono);font-size:0.8rem"></pre>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

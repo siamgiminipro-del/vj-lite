@@ -1,0 +1,9 @@
+{
+  "$schema": "https://gen.tauri.app/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Least-privilege capabilities for VJ-Lite Desktop",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

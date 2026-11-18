@@ -1,0 +1,4 @@
+[workspace]
+members = ["crates/vj-server"]
+exclude = ["src-tauri"]
+resolver = "2"
