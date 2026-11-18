@@ -186,6 +186,9 @@ if (tok) {
                     let token = body.trim().to_string();
                     if !token.is_empty() {
                         let _ = app.emit("supabase-oauth-token", token);
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.set_focus();
+                        }
                     }
                 }
                 let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
