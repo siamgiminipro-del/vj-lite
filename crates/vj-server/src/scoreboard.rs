@@ -83,6 +83,9 @@ pub fn compute_standings(
     let mut first_solve: HashMap<i64, (i64, i64, i64)> = HashMap::new(); // problem_id -> (ts, sub_id, user_id)
 
     for sub in ordered {
+        if sub.submitted_at > contest.end_time {
+            continue;
+        }
         let row = users.entry(sub.user_id).or_insert_with(|| StandingsRow {
             rank: 0,
             user_id: sub.user_id,

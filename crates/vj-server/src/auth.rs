@@ -1,10 +1,34 @@
 use crate::db::{hash_password, now_unix, verify_password};
 use axum::http::HeaderMap;
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const SESSION_TTL_SECS: i64 = 7 * 24 * 3600;
+
+#[derive(Serialize, Deserialize)]
+struct SignedTokenClaims {
+    email: String,
+    name: String,
+    role: String,
+    exp: i64,
+    nonce: String,
+}
+
+fn token_signing_secret() -> String {
+    std::env::var("SESSION_SECRET")
+        .or_else(|_| std::env::var("SUPABASE_ANON_KEY"))
+        .unwrap_or_else(|_| "vj-lite-default-hmac-secret-2026".to_string())
+}
+
+fn sign_hex_payload(hex_payload: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token_signing_secret().as_bytes());
+    hasher.update(b":vjl1:");
+    hasher.update(hex_payload.as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OjHandleInfo {
@@ -31,10 +55,33 @@ pub fn max_users() -> i64 {
 }
 
 pub fn create_session(conn: &Connection, user_id: i64) -> Result<String, rusqlite::Error> {
-    let token = Uuid::new_v4().simple().to_string();
     let expires_at = now_unix() + SESSION_TTL_SECS;
+    let user_row: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT email, display_name, role FROM users WHERE id = ?",
+            params![user_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+
+    let token = if let Some((email, name, role)) = user_row {
+        let claims = SignedTokenClaims {
+            email,
+            name,
+            role,
+            exp: expires_at,
+            nonce: Uuid::new_v4().simple().to_string(),
+        };
+        let json_str = serde_json::to_string(&claims).unwrap_or_default();
+        let hex_payload = hex::encode(json_str.as_bytes());
+        let sig = sign_hex_payload(&hex_payload);
+        format!("vjl1.{hex_payload}.{sig}")
+    } else {
+        Uuid::new_v4().simple().to_string()
+    };
+
     conn.execute(
-        "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
         params![token, user_id, expires_at],
     )?;
     Ok(token)
@@ -101,19 +148,63 @@ pub fn extract_token(headers: &HeaderMap) -> Option<String> {
 pub fn session_user(conn: &Connection, headers: &HeaderMap) -> Option<AuthUser> {
     let token = extract_token(headers)?;
     let now = now_unix();
-    let row: (i64, i64) = conn
+    let row: Option<(i64, i64)> = conn
         .query_row(
             "SELECT user_id, expires_at FROM sessions WHERE token = ?",
             params![token],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok()?;
+        .ok();
 
-    if row.1 < now {
-        let _ = conn.execute("DELETE FROM sessions WHERE token = ?", params![token]);
+    if let Some((uid, exp)) = row {
+        if exp <= now {
+            return None;
+        }
+        return get_user_by_id(conn, uid);
+    }
+
+    // Recover stateless signed vjl1.<hex>.<sig> token if server restarted and wiped SQLite sessions
+    let rest = token.strip_prefix("vjl1.")?;
+    let (hex_payload, sig) = rest.split_once('.')?;
+    if sign_hex_payload(hex_payload) != sig {
         return None;
     }
-    get_user_by_id(conn, row.0)
+    let bytes = hex::decode(hex_payload).ok()?;
+    let claims: SignedTokenClaims = serde_json::from_slice(&bytes).ok()?;
+    if claims.exp <= now || !claims.email.contains('@') {
+        return None;
+    }
+
+    let uid: i64 = match conn.query_row(
+        "SELECT id FROM users WHERE lower(email) = lower(?)",
+        params![claims.email],
+        |r| r.get(0),
+    ) {
+        Ok(id) => id,
+        Err(_) => {
+            let allowlist = std::env::var("COORDINATOR_EMAILS").unwrap_or_default();
+            let is_coord = allowlist
+                .split(',')
+                .any(|e| e.trim().eq_ignore_ascii_case(&claims.email));
+            let role = if is_coord || claims.role == "coordinator" || claims.role == "admin" {
+                "coordinator"
+            } else {
+                "participant"
+            };
+            conn.execute(
+                "INSERT INTO users (email, google_sub, display_name, password_hash, role, created_at) VALUES (?, ?, ?, '', ?, ?)",
+                params![claims.email, format!("recovered:{}", claims.email), claims.name, role, now],
+            )
+            .ok()?;
+            conn.last_insert_rowid()
+        }
+    };
+
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
+        params![token, uid, claims.exp],
+    );
+    get_user_by_id(conn, uid)
 }
 
 pub fn register_email_user(

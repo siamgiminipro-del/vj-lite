@@ -96,6 +96,73 @@ async fn test_health_google_auth_access_code_and_past_contests() {
     assert_eq!(create_res.status(), 201);
     let create_json: Value = create_res.json().await.unwrap();
     assert_eq!(create_json["access_code"], "STU-01");
+    let created_cid = create_json["id"].as_i64().unwrap();
+
+    // 6. Link and Unlink OJ handles
+    let link_res: Value = client
+        .post(format!("{base}/api/oj/link"))
+        .bearer_auth(&token)
+        .json(&json!({ "platform": "codeforces", "handle": "tourist" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(link_res["ok"], true);
+    assert_eq!(link_res["user"]["oj_handles"][0]["handle"], "tourist");
+
+    let unlink_res: Value = client
+        .post(format!("{base}/api/oj/unlink"))
+        .bearer_auth(&token)
+        .json(&json!({ "platform": "codeforces" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(unlink_res["ok"], true);
+    assert_eq!(unlink_res["user"]["oj_handles"].as_array().unwrap().len(), 0);
+
+    // 7. Wrong access code for specific contestId is rejected (403)
+    let bad_join = client
+        .post(format!("{base}/api/contests/join"))
+        .bearer_auth(&token)
+        .json(&json!({ "accessCode": "CLUB-2026-W1", "contestId": created_cid }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_join.status(), 403);
+
+    // 8. Stateless signed session token (vjl1.*) survives full server restart!
+    assert!(token.starts_with("vjl1."));
+    let (restarted_base, _) = spawn_test_app(None, None).await;
+    let me_after_restart: Value = client
+        .get(format!("{restarted_base}/api/auth/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me_after_restart["user"]["email"], "newstudent@gmail.com");
+
+    // 9. Explicit logout revokes the token even if signed
+    client
+        .post(format!("{restarted_base}/api/auth/logout"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    let after_logout = client
+        .get(format!("{restarted_base}/api/contests"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after_logout.status(), 401);
 }
 
 #[tokio::test]

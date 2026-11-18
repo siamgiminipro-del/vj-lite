@@ -374,6 +374,7 @@ function renderActiveProblem() {
         ? 'You are registered for this contest. Problems will unlock automatically when the contest starts.'
         : 'No problems in this contest.';
     $('prob-samples').innerHTML = '';
+    $('prob-external-link')?.classList.add('hidden');
     $('ext-actions').classList.add('hidden');
     $('local-actions').classList.add('hidden');
     return;
@@ -386,6 +387,17 @@ function renderActiveProblem() {
   $('prob-title').textContent = p.title;
   $('prob-limits').textContent = `${p.time_limit_ms} ms • ${p.memory_limit_mb} MB`;
   $('prob-statement').textContent = p.statement;
+
+  const extLink = $('prob-external-link');
+  if (extLink) {
+    if (p.problemUrl) {
+      extLink.href = p.problemUrl;
+      extLink.textContent = `Open on ${p.platform.toUpperCase()} ↗`;
+      extLink.classList.remove('hidden');
+    } else {
+      extLink.classList.add('hidden');
+    }
+  }
 
   const smp = $('prob-samples');
   smp.innerHTML = '';
@@ -484,6 +496,10 @@ function renderStandings() {
 function renderClarifications() {
   const list = $('clar-list');
   const items = state.contestData?.clarifications || [];
+  const canReply =
+    Boolean(state.contestData?.contest?.is_creator) ||
+    state.user?.role === 'coordinator' ||
+    state.user?.role === 'admin';
   list.innerHTML = items.length ? '' : '<p class="muted">No clarifications yet.</p>';
   for (const c of items) {
     const div = document.createElement('div');
@@ -492,10 +508,90 @@ function renderClarifications() {
     div.innerHTML = `
       <div class="row-between"><strong>${c.is_announcement ? '📢 Announcement' : esc(c.username)}</strong><span class="pill">${esc(c.problem_alias || 'General')}</span></div>
       <p class="pre-wrap" style="margin:0.4rem 0">${esc(c.question)}</p>
-      ${c.answer ? `<div class="muted"><strong>Reply:</strong> ${esc(c.answer)}</div>` : ''}
+      ${c.answer ? `<div class="muted" style="margin-bottom:0.35rem"><strong>Reply:</strong> ${esc(c.answer)}</div>` : ''}
+      ${
+        canReply && !c.is_announcement
+          ? `<div class="row-gap" style="margin-top:0.4rem">
+               <input type="text" class="clar-reply-inp" value="${esc(c.answer || '')}" placeholder="Write reply..." style="flex:1;padding:0.35rem 0.55rem;font-size:0.8rem" />
+               <button class="btn btn-sm btn-outline clar-reply-btn" type="button">${c.answer ? 'Update Reply' : 'Reply'}</button>
+             </div>`
+          : ''
+      }
     `;
+    const replyBtn = div.querySelector('.clar-reply-btn');
+    if (replyBtn) {
+      replyBtn.addEventListener('click', async () => {
+        const answer = div.querySelector('.clar-reply-inp').value.trim();
+        if (!answer) return toast('Enter a reply first.', 'error');
+        try {
+          await api(`/api/contests/${state.activeContestId}/clarifications/${c.id}`, {
+            method: 'PATCH',
+            body: { answer },
+          });
+          toast('Reply posted!', 'success');
+          await openContest(state.activeContestId);
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      });
+    }
     list.appendChild(div);
   }
+}
+
+function getLocalOjMeta(platform) {
+  try {
+    return JSON.parse(localStorage.getItem(`vj_local_${platform}`) || 'null');
+  } catch (_) {
+    return null;
+  }
+}
+
+function renderOjBridgeStatus() {
+  const box = $('oj-connected-summary');
+  if (!box) return;
+  const handles = state.user?.oj_handles || [];
+  if (handles.length === 0) {
+    box.innerHTML = '<div class="muted" style="font-size:0.8rem">No OJ accounts linked yet. Choose a platform below to connect.</div>';
+  } else {
+    box.innerHTML = handles
+      .map((h) => {
+        const meta = getLocalOjMeta(h.platform);
+        const modeBadge =
+          meta?.method === 'password'
+            ? 'Password + Session ✓'
+            : meta?.method === 'google_sso'
+            ? 'Google / SSO Session ✓'
+            : 'Session Active ✓';
+        return `
+          <div class="row-between" style="padding:0.4rem 0.65rem;background:var(--canvas);border:1px solid var(--border);border-radius:8px;font-size:0.82rem">
+            <span><strong>${esc(h.platform.toUpperCase())}</strong> • <code>@${esc(h.handle)}</code> <span class="pill pill-emerald" style="margin-left:0.35rem">${esc(modeBadge)}</span></span>
+            <button class="btn btn-sm btn-outline btn-unlink-oj" data-plat="${esc(h.platform)}" type="button">Unlink</button>
+          </div>
+        `;
+      })
+      .join('');
+    box.querySelectorAll('.btn-unlink-oj').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const plat = btn.dataset.plat;
+        try {
+          localStorage.removeItem(`vj_local_${plat}`);
+          await api('/api/oj/unlink', { method: 'POST', body: { platform: plat } });
+          await refreshMe();
+          renderOjBridgeStatus();
+          toast(`Unlinked ${plat.toUpperCase()}.`, 'info');
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      });
+    });
+  }
+
+  const cur = handles.find((h) => h.platform === state.selectedOjTab);
+  const localMeta = getLocalOjMeta(state.selectedOjTab);
+  const prefill = cur?.handle || localMeta?.handle || '';
+  if ($('oj-handle-input')) $('oj-handle-input').value = prefill;
+  if ($('oj-google-handle-input')) $('oj-google-handle-input').value = prefill;
 }
 
 async function refreshMe() {
@@ -503,7 +599,26 @@ async function refreshMe() {
   state.user = data.user;
   state.userCount = data.userCount;
   state.maxUsers = data.maxUsers;
+
+  // Auto-restore locally saved OJ handles if server restarted
+  if (state.user) {
+    const serverSet = new Set((state.user.oj_handles || []).map((h) => `${h.platform}:${h.handle}`));
+    let restored = false;
+    for (const plat of ['codeforces', 'atcoder', 'cses', 'codechef']) {
+      const meta = getLocalOjMeta(plat);
+      if (meta?.handle && !serverSet.has(`${plat}:${meta.handle}`)) {
+        try {
+          const r = await api('/api/oj/link', { method: 'POST', body: { platform: plat, handle: meta.handle } });
+          if (r.user) state.user = r.user;
+          restored = true;
+        } catch (_) {}
+      }
+    }
+    if (restored) uiLog('Restored cached OJ handles to server');
+  }
+
   renderHeader();
+  renderOjBridgeStatus();
 }
 
 async function loadContests() {
@@ -661,10 +776,24 @@ function wireEvents() {
   $('btn-hub-create-contest').addEventListener('click', () => openCreateContestView());
   $('btn-refresh-hub').addEventListener('click', () => loadContests());
 
-  $('btn-open-oj-bridge').addEventListener('click', () => $('modal-oj-bridge').classList.remove('hidden'));
+  $('btn-open-oj-bridge').addEventListener('click', () => {
+    renderOjBridgeStatus();
+    $('modal-oj-bridge').classList.remove('hidden');
+  });
   $('btn-close-oj-bridge').addEventListener('click', () => $('modal-oj-bridge').classList.add('hidden'));
   $('btn-close-cd').addEventListener('click', () => $('modal-contest-details').classList.add('hidden'));
   $('btn-close-code').addEventListener('click', () => $('modal-code').classList.add('hidden'));
+
+  document.querySelectorAll('.modal').forEach((m) => {
+    m.addEventListener('click', (ev) => {
+      if (ev.target === m) m.classList.add('hidden');
+    });
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      document.querySelectorAll('.modal').forEach((m) => m.classList.add('hidden'));
+    }
+  });
 
   $('contest-select').addEventListener('change', (e) => openContest(Number(e.target.value)));
 
@@ -718,6 +847,22 @@ function wireEvents() {
         toast(err.message, 'error');
       }
     });
+
+    window.__TAURI__.event.listen('oj-session-saved', async (event) => {
+      const p = event.payload || {};
+      if (p.platform) {
+        toast(`${p.platform.toUpperCase()} session active and saved!`, 'success');
+      }
+    });
+
+    window.__TAURI__.event.listen('oj-submit-done', async (event) => {
+      const plat = event.payload || 'OJ';
+      toast(`Submitted to ${String(plat).toUpperCase()}! Auto-syncing verdicts...`, 'success');
+      if (state.activeContestId) {
+        setTimeout(() => $('btn-sync-verdicts')?.click(), 2500);
+        setTimeout(() => $('btn-sync-verdicts')?.click(), 8500);
+      }
+    });
   }
 
   $('btn-join-contest').addEventListener('click', async () => {
@@ -734,21 +879,54 @@ function wireEvents() {
     }
   });
 
+  function setOjLoginMode(mode) {
+    const isPass = mode === 'password';
+    $('btn-mode-password').classList.toggle('btn-primary', isPass);
+    $('btn-mode-password').classList.toggle('btn-outline', !isPass);
+    $('btn-mode-google').classList.toggle('btn-primary', !isPass);
+    $('btn-mode-google').classList.toggle('btn-outline', isPass);
+    $('oj-local-form').classList.toggle('hidden', !isPass);
+    $('oj-google-form').classList.toggle('hidden', isPass);
+  }
+
+  $('btn-mode-password').addEventListener('click', () => setOjLoginMode('password'));
+  $('btn-mode-google').addEventListener('click', () => setOjLoginMode('google'));
+
   document.querySelectorAll('.oj-tab-btn').forEach((b) => {
     b.addEventListener('click', () => {
       document.querySelectorAll('.oj-tab-btn').forEach((x) => x.classList.remove('btn-primary'));
       b.classList.add('btn-primary');
       state.selectedOjTab = b.dataset.oj;
-      $('oj-handle-label').textContent = `${b.textContent} Handle`;
-      $('btn-oj-webview-login').textContent = `Open ${b.textContent} Sign-In Window (Google / SSO)`;
+      const label = b.textContent;
+      $('oj-handle-label').textContent = `${label} Handle / Username`;
+      $('oj-pass-label').textContent = `${label} Password (Saved Encrypted in OS Keychain)`;
+      $('oj-google-handle-label').textContent = `${label} Handle (for Verdict Syncing)`;
+      $('btn-oj-webview-login').textContent = `Sign In to ${label} with Google & Keep Session`;
+      renderOjBridgeStatus();
     });
   });
 
-  $('btn-oj-webview-login').addEventListener('click', async () => {
+  // Process 1: Login with Username & Password and Keep Session
+  $('oj-local-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
     try {
+      const plat = state.selectedOjTab;
+      const handle = $('oj-handle-input').value.trim();
+      const password = $('oj-pass-input').value;
+      if (!handle || !password) {
+        return toast('Enter both handle/username and password, or switch to Process 2 (Google Auth).', 'error');
+      }
+      localStorage.setItem(
+        `vj_local_${plat}`,
+        JSON.stringify({ handle, hasLocalPass: true, method: 'password', updatedAt: Date.now() })
+      );
+      await api('/api/oj/link', { method: 'POST', body: { platform: plat, handle } });
+      await refreshMe();
+      $('oj-pass-input').value = '';
+
       if (inTauriApp()) {
-        await tauriInvoke('open_oj_login_webview', { platform: state.selectedOjTab });
-        toast(`Sign into ${state.selectedOjTab} (Google / Gmail SSO works!) then close that window.`, 'info');
+        await tauriInvoke('login_oj_with_password', { platform: plat, handle, password });
+        toast(`Signing into ${plat.toUpperCase()} as @${handle} and keeping session...`, 'success');
       } else {
         const urls = {
           codeforces: 'https://codeforces.com/enter',
@@ -756,31 +934,42 @@ function wireEvents() {
           cses: 'https://cses.fi/login',
           codechef: 'https://www.codechef.com/login',
         };
-        window.open(urls[state.selectedOjTab] || urls.codeforces, '_blank', 'noopener,noreferrer');
+        window.open(urls[plat] || urls.codeforces, '_blank', 'noopener,noreferrer');
+        toast(`Linked @${handle}! Complete login in the opened ${plat.toUpperCase()} tab to keep browser session.`, 'success');
       }
     } catch (err) {
       toast(err.message, 'error');
     }
   });
 
-  $('oj-local-form').addEventListener('submit', async (e) => {
+  // Process 2: Login with Google Auth / Browser SSO and Keep Session
+  $('oj-google-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
-      const handle = $('oj-handle-input').value.trim();
-      const password = $('oj-pass-input').value;
-      if (inTauriApp() && password) {
-        await tauriInvoke('save_oj_credentials', {
-          platform: state.selectedOjTab,
-          handle,
-          password,
-        });
-      } else if (password) {
-        localStorage.setItem(`vj_local_${state.selectedOjTab}`, JSON.stringify({ handle, hasLocalPass: true }));
-      }
-      await api('/api/oj/link', { method: 'POST', body: { platform: state.selectedOjTab, handle } });
+      const plat = state.selectedOjTab;
+      const handle = $('oj-google-handle-input').value.trim();
+      if (!handle) return toast('Enter your OJ handle first.', 'error');
+
+      localStorage.setItem(
+        `vj_local_${plat}`,
+        JSON.stringify({ handle, hasLocalPass: false, method: 'google_sso', updatedAt: Date.now() })
+      );
+      await api('/api/oj/link', { method: 'POST', body: { platform: plat, handle } });
       await refreshMe();
-      $('modal-oj-bridge').classList.add('hidden');
-      toast(`Linked ${state.selectedOjTab} handle @${handle} (credentials kept local).`, 'success');
+
+      if (inTauriApp()) {
+        await tauriInvoke('open_oj_login_webview', { platform: plat, handle });
+        toast(`Sign into ${plat.toUpperCase()} with Google/SSO in the window — session stays saved!`, 'success');
+      } else {
+        const urls = {
+          codeforces: 'https://codeforces.com/enter',
+          atcoder: 'https://atcoder.jp/login',
+          cses: 'https://cses.fi/login',
+          codechef: 'https://www.codechef.com/login',
+        };
+        window.open(urls[plat] || urls.codeforces, '_blank', 'noopener,noreferrer');
+        toast(`Linked @${handle}! Sign in with Google in the opened ${plat.toUpperCase()} tab — your browser keeps the session.`, 'success');
+      }
     } catch (err) {
       toast(err.message, 'error');
     }

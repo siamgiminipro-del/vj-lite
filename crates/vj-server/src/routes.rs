@@ -87,6 +87,7 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
         .route("/api/oj/link", post(link_oj))
+        .route("/api/oj/unlink", post(unlink_oj))
         .route("/api/problems/fetch", post(fetch_problem_endpoint))
         .route("/api/problems", get(list_problems).post(create_problem))
         .route("/api/contests", get(list_contests).post(create_contest))
@@ -342,7 +343,14 @@ fn futures_free_google_upsert(
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(tok) = extract_token(&headers) {
         let conn = state.db.lock().unwrap();
-        let _ = conn.execute("DELETE FROM sessions WHERE token = ?", params![tok]);
+        if let Some(u) = session_user(&conn, &headers) {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO sessions (token, user_id, expires_at) VALUES (?, ?, 0)",
+                params![tok, u.id],
+            );
+        } else {
+            let _ = conn.execute("UPDATE sessions SET expires_at = 0 WHERE token = ?", params![tok]);
+        }
     }
     let mut h = HeaderMap::new();
     h.insert(
@@ -396,6 +404,30 @@ async fn link_oj(
          VALUES (?, ?, ?, 1, 0)
          ON CONFLICT(user_id, platform) DO UPDATE SET handle = excluded.handle, verified = 1",
         params![user.id, platform, handle],
+    );
+    let updated = get_user_by_id(&conn, user.id);
+    Json(json!({ "ok": true, "user": updated })).into_response()
+}
+
+#[derive(Deserialize)]
+struct UnlinkOjReq {
+    platform: String,
+}
+
+async fn unlink_oj(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<UnlinkOjReq>,
+) -> Response {
+    let user = match require_user(&state, &headers) {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+    let platform = body.platform.trim().to_lowercase();
+    let conn = state.db.lock().unwrap();
+    let _ = conn.execute(
+        "DELETE FROM oj_handles WHERE user_id = ? AND platform = ?",
+        params![user.id, platform],
     );
     let updated = get_user_by_id(&conn, user.id);
     Json(json!({ "ok": true, "user": updated })).into_response()
@@ -906,7 +938,8 @@ async fn get_contest(
             "end_time": end,
             "penalty_minutes": pen,
             "freeze_minutes": freeze,
-            "status": status
+            "status": status,
+            "is_creator": is_owner
         },
         "problems": problems,
         "clarifications": clarifications
@@ -1130,11 +1163,12 @@ fn apply_fetched_oj_results(
     let mut synced = 0usize;
     let mut updated = 0usize;
 
+    let is_ended = now_unix() > end_time;
     for json in cf_payloads {
         if let Some(items) = json["result"].as_array() {
             for item in items {
                 let created = item["creationTimeSeconds"].as_i64().unwrap_or(0);
-                if created < start_time || created > end_time {
+                if created + 60 < start_time || (!is_ended && created > end_time) {
                     continue;
                 }
                 let cid = item["problem"]["contestId"].as_i64().unwrap_or(0);
@@ -1165,7 +1199,7 @@ fn apply_fetched_oj_results(
         if let Some(items) = json.as_array() {
             for item in items {
                 let created = item["epoch_second"].as_i64().unwrap_or(0);
-                if created < start_time || created > end_time {
+                if created + 60 < start_time || (!is_ended && created > end_time) {
                     continue;
                 }
                 let pcode = item["problem_id"].as_str().unwrap_or("").to_uppercase();
@@ -1266,13 +1300,18 @@ async fn sync_all_contest(
         return err_resp(403, "Coordinator access required.");
     }
 
-    let user_handles: Vec<(i64, String, String)> = {
+    let (start_time, user_handles): (i64, Vec<(i64, String, String)>) = {
         let conn = state.db.lock().unwrap();
+        let st_time: i64 = conn
+            .query_row("SELECT start_time FROM contests WHERE id = ?", params![contest_id], |r| r.get(0))
+            .unwrap_or(0);
         let mut st = conn.prepare("SELECT user_id, platform, handle FROM oj_handles").unwrap();
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        let handles = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .unwrap()
             .filter_map(Result::ok)
-            .collect()
+            .collect();
+        (st_time, handles)
     };
 
     let mut total_synced = 0usize;
@@ -1285,6 +1324,19 @@ async fn sync_all_contest(
                 if let Ok(json) = r.json::<Value>().await {
                     let conn = state.db.lock().unwrap();
                     let (s, u) = apply_fetched_oj_results(&conn, contest_id, *uid, &[json], &[]);
+                    total_synced += s;
+                    total_updated += u;
+                }
+            }
+        } else if plat == "atcoder" {
+            let url = format!(
+                "{}/atcoder-api/v3/user/submissions?user={}&from_second={}",
+                state.atcoder_api_base, handle, start_time
+            );
+            if let Ok(r) = state.http.get(&url).send().await {
+                if let Ok(json) = r.json::<Value>().await {
+                    let conn = state.db.lock().unwrap();
+                    let (s, u) = apply_fetched_oj_results(&conn, contest_id, *uid, &[], &[json]);
                     total_synced += s;
                     total_updated += u;
                 }
@@ -1339,11 +1391,11 @@ async fn submit_local(
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .ok();
-        let Some((start, end)) = times else {
+        let Some((start, _end)) = times else {
             return err_resp(404, "Contest not found.");
         };
-        if !is_coordinator(&user) && (now < start || now > end) {
-            return err_resp(400, "Contest is not currently running.");
+        if !is_coordinator(&user) && now < start {
+            return err_resp(400, "Contest has not started yet.");
         }
 
         let prob: Option<(String, String, String, i64)> = conn
@@ -1589,12 +1641,21 @@ async fn post_clarification(
     if body.question.trim().is_empty() {
         return err_resp(400, "Question cannot be empty.");
     }
-    let is_ann = if body.is_announcement.unwrap_or(false) && is_coordinator(&user) {
+    let conn = state.db.lock().unwrap();
+    let is_owner = conn
+        .query_row(
+            "SELECT created_by FROM contests WHERE id = ?",
+            params![contest_id],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+        .is_some_and(|owner| owner == user.id);
+    let is_ann = if body.is_announcement.unwrap_or(false) && (is_coordinator(&user) || is_owner) {
         1
     } else {
         0
     };
-    let conn = state.db.lock().unwrap();
     conn.execute(
         "INSERT INTO clarifications (contest_id, user_id, problem_alias, question, answer, is_announcement, created_at)
          VALUES (?, ?, ?, ?, '', ?, ?)",
@@ -1628,10 +1689,19 @@ async fn answer_clarification(
         Ok(u) => u,
         Err(r) => return r,
     };
-    if !is_coordinator(&user) {
-        return err_resp(403, "Coordinator access required.");
-    }
     let conn = state.db.lock().unwrap();
+    let is_owner = conn
+        .query_row(
+            "SELECT created_by FROM contests WHERE id = ?",
+            params![contest_id],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+        .is_some_and(|owner| owner == user.id);
+    if !is_coordinator(&user) && !is_owner {
+        return err_resp(403, "Coordinator or contest creator access required.");
+    }
     let _ = conn.execute(
         "UPDATE clarifications SET answer = ? WHERE id = ? AND contest_id = ?",
         params![body.answer.trim(), clar_id, contest_id],

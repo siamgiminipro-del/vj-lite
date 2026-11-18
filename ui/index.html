@@ -248,7 +248,10 @@
                   </div>
                   <h2 id="prob-title" style="margin:0;font-size:1.3rem">Problem</h2>
                 </div>
-                <div id="prob-limits" class="muted" style="font-family:var(--mono);font-size:0.78rem">1000 ms • 256 MB</div>
+                <div class="row-gap">
+                  <div id="prob-limits" class="muted" style="font-family:var(--mono);font-size:0.78rem">1000 ms • 256 MB</div>
+                  <a id="prob-external-link" class="btn btn-outline btn-sm hidden" href="#" target="_blank" rel="noopener noreferrer">Open on OJ ↗</a>
+                </div>
               </div>
               <p id="prob-statement" class="pre-wrap" style="color:var(--text-sec);font-size:0.92rem"></p>
               <div id="prob-samples" class="samples-grid"></div>
@@ -365,34 +368,59 @@
     </section>
   </main>
 
-  <!-- Modal: Multi-OJ Local Bridge -->
+  <!-- Modal: Multi-OJ Local Bridge / Account Connector -->
   <div id="modal-oj-bridge" class="modal hidden">
-    <div class="modal-card">
-      <div class="row-between" style="margin-bottom:0.75rem">
-        <h2 style="margin:0;font-size:1.1rem">Multi-OJ Local Bridge</h2>
+    <div class="modal-card" style="max-width:620px">
+      <div class="row-between" style="margin-bottom:0.65rem">
+        <h2 style="margin:0;font-size:1.15rem">Multi-OJ Account Connector</h2>
         <button id="btn-close-oj-bridge" class="btn btn-sm btn-outline" type="button">Close</button>
       </div>
       <p class="muted" style="margin-top:0">
-        Just enter your <strong>Handle</strong> to sync verdicts (no password needed). If you sign into Codeforces with Google/Gmail, use the OJ Sign-In window once so WebView remembers your session.
+        Connect your Codeforces, AtCoder, CSES, or CodeChef account using either <strong>1) Username &amp; Password</strong> or <strong>2) Google Auth / SSO</strong> and keep the session active.
       </p>
-      <div class="row-gap" style="margin:0.8rem 0">
+
+      <div id="oj-connected-summary" class="form-stack" style="margin-bottom:0.85rem;gap:0.4rem"></div>
+
+      <div class="muted" style="font-size:0.75rem;font-weight:700;margin-bottom:0.35rem">1. SELECT PLATFORM</div>
+      <div class="row-gap" style="margin-bottom:0.9rem">
         <button class="btn btn-sm btn-primary oj-tab-btn" data-oj="codeforces" type="button">Codeforces</button>
         <button class="btn btn-sm oj-tab-btn" data-oj="atcoder" type="button">AtCoder</button>
         <button class="btn btn-sm oj-tab-btn" data-oj="cses" type="button">CSES</button>
         <button class="btn btn-sm oj-tab-btn" data-oj="codechef" type="button">CodeChef</button>
       </div>
+
+      <div class="muted" style="font-size:0.75rem;font-weight:700;margin-bottom:0.35rem">2. CHOOSE LOGIN PROCESS</div>
+      <div class="row-gap" style="margin-bottom:0.85rem">
+        <button id="btn-mode-password" class="btn btn-sm btn-primary" type="button" style="flex:1">1) Username &amp; Password</button>
+        <button id="btn-mode-google" class="btn btn-sm btn-outline" type="button" style="flex:1">2) Google Auth &amp; Keep Session</button>
+      </div>
+
+      <!-- Process 1: Username / Handle + Password -->
       <form id="oj-local-form" class="form-stack">
         <label>
-          <span id="oj-handle-label">Codeforces Handle</span>
-          <input id="oj-handle-input" type="text" required placeholder="e.g. siam_cf" />
+          <span id="oj-handle-label">Codeforces Handle / Username</span>
+          <input id="oj-handle-input" type="text" required placeholder="e.g. tourist" />
         </label>
         <label>
-          Password (Optional — leave blank if using Google / Gmail SSO)
-          <input id="oj-pass-input" type="password" placeholder="Optional — only saved locally in OS Keychain" />
+          <span id="oj-pass-label">Codeforces Password (Saved Encrypted in OS Keychain)</span>
+          <input id="oj-pass-input" type="password" required placeholder="Enter your OJ password" />
         </label>
-        <div class="callout callout-emerald">✓ Handle alone is enough for automatic verdict syncing</div>
-        <button class="btn btn-primary btn-block" type="submit">Link Handle (No Password Needed)</button>
-        <button id="btn-oj-webview-login" class="btn btn-outline btn-block" type="button">Open Codeforces Sign-In Window (Google / SSO)</button>
+        <div class="callout callout-emerald">
+          ✓ Saves password in your local OS Keychain, signs into the OJ WebView, and keeps your session active.
+        </div>
+        <button id="btn-save-oj-password" class="btn btn-primary btn-block" type="submit">Login with Password &amp; Keep Session</button>
+      </form>
+
+      <!-- Process 2: Google Auth / Browser Session (No Password) -->
+      <form id="oj-google-form" class="form-stack hidden">
+        <label>
+          <span id="oj-google-handle-label">Codeforces Handle (for Verdict Syncing)</span>
+          <input id="oj-google-handle-input" type="text" required placeholder="e.g. siam_cf" />
+        </label>
+        <div class="callout callout-indigo">
+          ✓ Created your OJ account with Google? Enter your handle above and click below to sign in with Google/SSO and keep the persistent session.
+        </div>
+        <button id="btn-oj-webview-login" class="btn btn-emerald btn-block" type="submit">Sign In to Codeforces with Google &amp; Keep Session</button>
       </form>
     </div>
   </div>
