@@ -193,8 +193,7 @@ function renderHubContests() {
       if (canEnterDirect) {
         await openContest(c.id);
       } else {
-        $('join-access-code').focus();
-        toast('Enter the access code above to join this contest.', 'info');
+        openContestDetailsModal(c);
       }
     });
 
@@ -215,18 +214,24 @@ async function openContestDetailsModal(c) {
   if (!c.joined && c.status !== 'ended') {
     $('cd-body').innerHTML = `
       <div class="callout callout-indigo">
-        This active contest is protected by an Access Code. Enter the access code to view problems and participate.
+        ${
+          c.status === 'upcoming'
+            ? 'This upcoming contest requires an Access Code to register and enter.'
+            : 'This running contest is protected by an Access Code. Enter the access code to view problems and participate.'
+        }
       </div>
-      <div class="row-gap">
-        <input id="cd-code-input" type="text" placeholder="Enter Access Code" style="flex:1" />
-        <button id="cd-join-btn" class="btn btn-primary" type="button">Join Contest →</button>
-      </div>
+      <form id="cd-join-form" class="row-gap">
+        <input id="cd-code-input" type="text" required placeholder="Enter Access Code for this contest" style="flex:1" />
+        <button id="cd-join-btn" class="btn btn-primary" type="submit">Join Contest →</button>
+      </form>
     `;
-    $('cd-join-btn').addEventListener('click', async () => {
+    setTimeout(() => $('cd-code-input')?.focus(), 20);
+    $('cd-join-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
       try {
         const res = await api('/api/contests/join', {
           method: 'POST',
-          body: { accessCode: $('cd-code-input').value.trim() },
+          body: { accessCode: $('cd-code-input').value.trim(), contestId: c.id },
         });
         $('modal-contest-details').classList.add('hidden');
         toast(`Joined ${res.title}!`, 'success');
@@ -343,7 +348,22 @@ function renderProblems() {
 function renderActiveProblem() {
   const probs = state.contestData?.problems || [];
   const p = probs.find((x) => x.id === state.activeProblemId) || probs[0];
-  if (!p) return;
+  if (!p) {
+    const c = state.contestData?.contest;
+    $('prob-alias').textContent = '—';
+    $('prob-platform-pill').textContent = c?.status === 'upcoming' ? 'Upcoming' : 'Locked';
+    $('prob-title').textContent =
+      c?.status === 'upcoming' ? 'Contest Has Not Started Yet' : 'No Problems Available';
+    $('prob-limits').textContent = c ? `Starts ${fmtDate(c.start_time)}` : '';
+    $('prob-statement').textContent =
+      c?.status === 'upcoming'
+        ? 'You are registered for this contest. Problems will unlock automatically when the contest starts.'
+        : 'No problems in this contest.';
+    $('prob-samples').innerHTML = '';
+    $('ext-actions').classList.add('hidden');
+    $('local-actions').classList.add('hidden');
+    return;
+  }
   state.activeProblemId = p.id;
 
   $('prob-alias').textContent = p.alias;
@@ -481,6 +501,11 @@ async function loadContests() {
 }
 
 async function openContest(contestId) {
+  const meta = state.contests.find((x) => x.id === contestId);
+  if (meta && !meta.joined && meta.status !== 'ended') {
+    await openContestDetailsModal(meta);
+    return;
+  }
   try {
     const data = await api(`/api/contests/${contestId}`);
     state.contestData = data;
@@ -503,7 +528,11 @@ async function openContest(contestId) {
     connectSse(contestId);
   } catch (err) {
     showView('hub');
-    toast(err.message, 'error');
+    if (meta && err.message && err.message.toLowerCase().includes('access code')) {
+      await openContestDetailsModal(meta);
+    } else {
+      toast(err.message, 'error');
+    }
   }
 }
 
@@ -792,13 +821,15 @@ function wireEvents() {
     try {
       const problemIds = Array.from($('cc-problem-list').querySelectorAll('input:checked')).map((x) => Number(x.value));
       const now = Math.floor(Date.now() / 1000);
+      const delaySec = Math.max(0, Number($('cc-delay')?.value || 0)) * 60;
+      const startTime = now + delaySec;
       const res = await api('/api/contests', {
         method: 'POST',
         body: {
           title: $('cc-title').value.trim(),
           accessCode: $('cc-code').value.trim() || null,
-          startTime: now,
-          endTime: now + Number($('cc-duration').value || 120) * 60,
+          startTime,
+          endTime: startTime + Number($('cc-duration').value || 120) * 60,
           penaltyMinutes: Number($('cc-penalty').value || 20),
           freezeMinutes: Number($('cc-freeze').value || 30),
           problemIds,

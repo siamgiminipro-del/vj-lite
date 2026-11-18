@@ -580,13 +580,13 @@ async fn list_contests(
                     (SELECT COUNT(*) FROM submissions s WHERE s.contest_id = c.id) AS sub_count
              FROM contests c
              LEFT JOIN users u ON u.id = c.created_by
-             ORDER BY c.id DESC
+             ORDER BY CASE WHEN ? <= c.end_time THEN 0 ELSE 1 END, c.id DESC
              LIMIT ?",
         )
         .unwrap();
 
     let rows: Vec<Value> = stmt
-        .query_map(params![limit], |r| {
+        .query_map(params![now, limit], |r| {
             let cid: i64 = r.get(0)?;
             let start: i64 = r.get(4)?;
             let end: i64 = r.get(5)?;
@@ -599,7 +599,7 @@ async fn list_contests(
             } else {
                 "ended"
             };
-            let is_owner = created_by.is_some_and(|owner| owner == user.id) || is_coordinator(&user);
+            let is_owner = created_by.is_some_and(|owner| owner == user.id);
             let joined = is_owner
                 || conn
                     .query_row(
@@ -711,6 +711,8 @@ async fn create_contest(
 struct JoinContestReq {
     #[serde(rename = "accessCode")]
     access_code: String,
+    #[serde(rename = "contestId")]
+    contest_id: Option<i64>,
 }
 
 async fn join_contest_by_code(
@@ -723,17 +725,33 @@ async fn join_contest_by_code(
         Err(r) => return r,
     };
     let clean_code = body.access_code.trim().to_uppercase();
+    if clean_code.is_empty() {
+        return err_resp(400, "Enter a contest access code.");
+    }
     let conn = state.db.lock().unwrap();
-    let row: Option<(i64, String)> = conn
-        .query_row(
+    let row: Option<(i64, String)> = if let Some(target_cid) = body.contest_id {
+        conn.query_row(
+            "SELECT id, title FROM contests WHERE id = ? AND upper(access_code) = ?",
+            params![target_cid, clean_code],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()
+    } else {
+        conn.query_row(
             "SELECT id, title FROM contests WHERE upper(access_code) = ?",
             params![clean_code],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok();
+        .ok()
+    };
 
     let Some((contest_id, title)) = row else {
-        return err_resp(404, "Invalid contest access code.");
+        let msg = if body.contest_id.is_some() {
+            "Invalid access code for this contest."
+        } else {
+            "Invalid contest access code."
+        };
+        return err_resp(403, msg);
     };
 
     let _ = conn.execute(
@@ -781,7 +799,7 @@ async fn get_contest(
         return err_resp(404, "Contest not found.");
     };
 
-    let is_owner = created_by.is_some_and(|owner| owner == user.id) || is_coordinator(&user);
+    let is_owner = created_by.is_some_and(|owner| owner == user.id);
     let is_ended = now > end;
     let joined = is_ended
         || is_owner
@@ -798,52 +816,57 @@ async fn get_contest(
         return err_resp(403, "Enter the contest access code to view this contest.");
     }
 
-    let mut prob_stmt = conn
-        .prepare(
-            "SELECT cp.alias, p.id, p.source_type, p.platform, p.external_id, p.title, p.statement,
-                    p.input_spec, p.output_spec, p.sample_tests_json, p.hidden_tests_json, p.time_limit_ms, p.memory_limit_mb
-             FROM contest_problems cp
-             JOIN problems p ON p.id = cp.problem_id
-             WHERE cp.contest_id = ?
-             ORDER BY cp.alias ASC",
-        )
-        .unwrap();
+    let hide_problems = now < start && !is_owner;
+    let problems: Vec<Value> = if hide_problems {
+        Vec::new()
+    } else {
+        let mut prob_stmt = conn
+            .prepare(
+                "SELECT cp.alias, p.id, p.source_type, p.platform, p.external_id, p.title, p.statement,
+                        p.input_spec, p.output_spec, p.sample_tests_json, p.hidden_tests_json, p.time_limit_ms, p.memory_limit_mb
+                 FROM contest_problems cp
+                 JOIN problems p ON p.id = cp.problem_id
+                 WHERE cp.contest_id = ?
+                 ORDER BY cp.alias ASC",
+            )
+            .unwrap();
 
-    let problems: Vec<Value> = prob_stmt
-        .query_map(params![id], |r| {
-            let source_type: String = r.get(2)?;
-            let platform: String = r.get::<_, Option<String>>(3)?.unwrap_or_else(|| "local".into());
-            let ext_id: Option<String> = r.get(4)?;
-            let samples_str: String = r.get(9)?;
-            let hidden_str: String = r.get(10)?;
-            let samples: Vec<TestCase> = serde_json::from_str(&samples_str).unwrap_or_default();
-            let hidden: Vec<TestCase> = serde_json::from_str(&hidden_str).unwrap_or_default();
+        prob_stmt
+            .query_map(params![id], |r| {
+                let source_type: String = r.get(2)?;
+                let platform: String = r.get::<_, Option<String>>(3)?.unwrap_or_else(|| "local".into());
+                let ext_id: Option<String> = r.get(4)?;
+                let samples_str: String = r.get(9)?;
+                let hidden_str: String = r.get(10)?;
+                let samples: Vec<TestCase> = serde_json::from_str(&samples_str).unwrap_or_default();
+                let hidden: Vec<TestCase> = serde_json::from_str(&hidden_str).unwrap_or_default();
 
-            let parsed = ext_id
-                .as_deref()
-                .and_then(|eid| parse_oj_problem(&platform, eid));
+                let parsed = ext_id
+                    .as_deref()
+                    .and_then(|eid| parse_oj_problem(&platform, eid));
 
-            Ok(json!({
-                "alias": r.get::<_, String>(0)?,
-                "id": r.get::<_, i64>(1)?,
-                "source_type": source_type,
-                "platform": platform,
-                "external_id": ext_id,
-                "title": r.get::<_, String>(5)?,
-                "statement": r.get::<_, String>(6)?,
-                "input_spec": r.get::<_, String>(7)?,
-                "output_spec": r.get::<_, String>(8)?,
-                "sampleTests": samples,
-                "hasLocalTests": !samples.is_empty() || !hidden.is_empty(),
-                "submitUrl": parsed.as_ref().map(|p| &p.submit_url),
-                "problemUrl": parsed.as_ref().map(|p| &p.problem_url),
-                "time_limit_ms": r.get::<_, i64>(11)?,
-                "memory_limit_mb": r.get::<_, i64>(12)?
-            }))
-        })
-        .unwrap()
-        .filter_map(Result::ok)
-        .collect();
+                Ok(json!({
+                    "alias": r.get::<_, String>(0)?,
+                    "id": r.get::<_, i64>(1)?,
+                    "source_type": source_type,
+                    "platform": platform,
+                    "external_id": ext_id,
+                    "title": r.get::<_, String>(5)?,
+                    "statement": r.get::<_, String>(6)?,
+                    "input_spec": r.get::<_, String>(7)?,
+                    "output_spec": r.get::<_, String>(8)?,
+                    "sampleTests": samples,
+                    "hasLocalTests": !samples.is_empty() || !hidden.is_empty(),
+                    "submitUrl": parsed.as_ref().map(|p| &p.submit_url),
+                    "problemUrl": parsed.as_ref().map(|p| &p.problem_url),
+                    "time_limit_ms": r.get::<_, i64>(11)?,
+                    "memory_limit_mb": r.get::<_, i64>(12)?
+                }))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect()
+    };
 
     let mut clar_stmt = conn
         .prepare(

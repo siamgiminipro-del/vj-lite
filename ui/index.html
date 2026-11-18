@@ -62,7 +62,7 @@
           <div class="form-stack" style="margin-top:0.9rem">
             <label>
               Contest Access Code
-              <input id="join-access-code" type="text" placeholder="e.g. CLUB-2026-W1" value="CLUB-2026-W1" />
+              <input id="join-access-code" type="text" placeholder="Enter contest access code" />
             </label>
             <button id="btn-join-contest" class="btn btn-primary btn-block" type="button">Join Contest Room →</button>
           </div>
@@ -84,8 +84,8 @@
       <div class="card" style="margin-top:1.25rem">
         <div class="row-between" style="margin-bottom:0.85rem;flex-wrap:wrap">
           <div>
-            <h2 style="margin:0;font-size:1.15rem">Previous &amp; Active Contests (Latest 10)</h2>
-            <p class="muted" style="margin:0.15rem 0 0">Inspect contest details, final standings, and upsolve archived rounds.</p>
+            <h2 style="margin:0;font-size:1.15rem">Contests Directory (Running, Upcoming &amp; Previous)</h2>
+            <p class="muted" style="margin:0.15rem 0 0">Enter an access code to join running/upcoming contests, or upsolve archived rounds.</p>
           </div>
           <button id="btn-refresh-hub" class="btn btn-outline btn-sm" type="button">↻ Refresh</button>
         </div>
@@ -140,10 +140,16 @@
                 <input id="cc-penalty" type="number" value="20" min="0" />
               </label>
             </div>
-            <label>
-              Scoreboard Freeze (mins before end)
-              <input id="cc-freeze" type="number" value="30" min="0" />
-            </label>
+            <div class="two-col">
+              <label>
+                Starts In (min, 0 = Now)
+                <input id="cc-delay" type="number" value="0" min="0" />
+              </label>
+              <label>
+                Scoreboard Freeze (mins before end)
+                <input id="cc-freeze" type="number" value="30" min="0" />
+              </label>
+            </div>
             <div>
               <div class="muted" style="font-size:0.8rem;margin-bottom:0.4rem">Select Problems (Aliased A, B, C...)</div>
               <div id="cc-problem-list" class="form-stack" style="max-height:170px;overflow-y:auto;gap:0.4rem"></div>
