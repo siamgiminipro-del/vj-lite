@@ -613,6 +613,10 @@ function wireEvents() {
 
   // Google Auth (Tauri uses system browser + loopback; Web uses standard OAuth redirect)
   $('btn-google-signin').addEventListener('click', async () => {
+    const btn = $('btn-google-signin');
+    const prevHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.textContent = 'Opening Google Sign-In...';
     try {
       const cfg = await api('/api/auth/config');
       if (cfg.supabaseEnabled && cfg.supabaseUrl) {
@@ -620,7 +624,9 @@ function wireEvents() {
           await window.__TAURI__.core.invoke('start_supabase_google_oauth', {
             supabaseUrl: cfg.supabaseUrl,
           });
-          toast('Complete Google Sign-In in your browser window...', 'info');
+          toast('Opened default browser — complete Google Sign-In there.', 'info');
+          btn.disabled = false;
+          btn.innerHTML = prevHtml;
           return;
         }
         const redirectTo = window.location.origin;
@@ -635,7 +641,10 @@ function wireEvents() {
       await api('/api/auth/google', { method: 'POST', body: { email, displayName: 'siam' } });
       await completeLoginAndEnterHub(`Signed in with Google (${email})!`);
     } catch (e) {
-      toast(e.message, 'error');
+      toast(e.message || 'Google Sign-In failed.', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = prevHtml;
     }
   });
 

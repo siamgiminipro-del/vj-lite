@@ -144,6 +144,7 @@ async fn start_supabase_google_oauth(app: AppHandle, supabase_url: String) -> Re
         supabase_url.trim_end_matches('/'),
         redirect_uri
     );
+    eprintln!("[vj-desktop] Starting Google OAuth in system browser: {auth_url}");
 
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
