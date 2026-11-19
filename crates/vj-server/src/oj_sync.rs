@@ -128,6 +128,27 @@ pub fn map_atcoder_verdict(v: &str) -> &'static str {
     }
 }
 
+pub fn normalize_external_verdict(raw: &str) -> &'static str {
+    let u = raw.trim().to_uppercase();
+    if u == "AC" || u == "OK" || u == "ACCEPTED" || u.contains("ACCEPTED") {
+        "AC"
+    } else if u == "WA" || u == "WRONG ANSWER" || u == "WRONG_ANSWER" || u.contains("WRONG") {
+        "WA"
+    } else if u == "TLE" || u == "TIME LIMIT EXCEEDED" || u == "TIME_LIMIT_EXCEEDED" || u.contains("TIME LIMIT") {
+        "TLE"
+    } else if u == "MLE" || u == "MEMORY LIMIT EXCEEDED" || u == "MEMORY_LIMIT_EXCEEDED" || u.contains("MEMORY LIMIT") {
+        "MLE"
+    } else if u == "RE" || u == "RUNTIME ERROR" || u == "RUNTIME_ERROR" || u.contains("RUNTIME") {
+        "RE"
+    } else if u == "CE" || u == "COMPILE ERROR" || u == "COMPILATION ERROR" || u == "COMPILATION_ERROR" || u.contains("COMPIL") {
+        "CE"
+    } else if u == "OLE" || u == "OUTPUT LIMIT EXCEEDED" || u.contains("OUTPUT LIMIT") {
+        "OLE"
+    } else {
+        "PENDING"
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct SyncOutcome {
     pub synced_count: usize,

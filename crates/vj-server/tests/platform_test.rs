@@ -399,3 +399,170 @@ fn test_scoreboard_freeze_behavior() {
     assert!(!admin_view.is_frozen);
     assert_eq!(admin_view.rows[0].solved_count, 1);
 }
+
+#[tokio::test]
+async fn test_report_external_verdict_cses_updates_submissions_and_standings() {
+    let (base, _) = spawn_test_app(None, None).await;
+    let client = reqwest::Client::new();
+
+    let login: Value = client
+        .post(format!("{base}/api/auth/login"))
+        .json(&json!({ "email": "bob@gmail.com", "password": "bob123" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().unwrap().to_string();
+
+    let prob_res: Value = client
+        .post(format!("{base}/api/problems"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "sourceType": "external",
+            "platform": "cses",
+            "externalId": "1623",
+            "title": "Apple Division",
+            "statement": "Minimize the difference between two groups of apples."
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pid = prob_res["id"].as_i64().unwrap();
+
+    let now = vj_server::db::now_unix();
+    let c_res: Value = client
+        .post(format!("{base}/api/contests"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "title": "CSES Only Contest",
+            "accessCode": "CSES-ONLY",
+            "startTime": now - 60,
+            "endTime": now + 3600,
+            "problemIds": [pid]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cid = c_res["id"].as_i64().unwrap();
+
+    // Link only CSES handle and ensure /sync returns 200 OK cleanly
+    client
+        .post(format!("{base}/api/oj/link"))
+        .bearer_auth(&token)
+        .json(&json!({ "platform": "cses", "handle": "bob_cses" }))
+        .send()
+        .await
+        .unwrap();
+
+    let sync_only_cses = client
+        .post(format!("{base}/api/contests/{cid}/sync"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sync_only_cses.status(), 200);
+
+    // Report PENDING submission from CSES WebView watcher
+    let rep1: Value = client
+        .post(format!("{base}/api/contests/{cid}/report-external-verdict"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "problemId": pid,
+            "platform": "cses",
+            "externalSubId": "cses:991122",
+            "language": "cpp",
+            "code": "int main() { return 0; }",
+            "verdict": "PENDING",
+            "timeMs": 0,
+            "passedTests": 0,
+            "totalTests": 0
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rep1["ok"], true);
+    assert_eq!(rep1["submission"]["verdict"], "PENDING");
+
+    let subs1: Value = client
+        .get(format!("{base}/api/contests/{cid}/submissions?mine=1"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(subs1["submissions"].as_array().unwrap().len(), 1);
+    assert_eq!(subs1["submissions"][0]["verdict"], "PENDING");
+
+    let st1: Value = client
+        .get(format!("{base}/api/contests/{cid}/standings"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(st1["rows"][0]["solved_count"], 0);
+
+    // Update same submission with final ACCEPTED verdict
+    let rep2: Value = client
+        .post(format!("{base}/api/contests/{cid}/report-external-verdict"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "problemId": pid,
+            "platform": "cses",
+            "externalSubId": "cses:991122",
+            "language": "cpp",
+            "verdict": "ACCEPTED",
+            "timeMs": 20,
+            "passedTests": 14,
+            "totalTests": 14
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rep2["ok"], true);
+    assert_eq!(rep2["submission"]["verdict"], "AC");
+
+    let subs2: Value = client
+        .get(format!("{base}/api/contests/{cid}/submissions?mine=1"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(subs2["submissions"].as_array().unwrap().len(), 1);
+    assert_eq!(subs2["submissions"][0]["verdict"], "AC");
+    assert_eq!(subs2["submissions"][0]["time_ms"], 20);
+    assert_eq!(subs2["submissions"][0]["passed_tests"], 14);
+    assert_eq!(subs2["submissions"][0]["total_tests"], 14);
+
+    let st2: Value = client
+        .get(format!("{base}/api/contests/{cid}/standings"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(st2["rows"][0]["solved_count"], 1);
+}

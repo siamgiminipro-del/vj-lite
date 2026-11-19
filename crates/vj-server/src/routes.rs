@@ -4,7 +4,7 @@ use crate::auth::{
 };
 use crate::db::now_unix;
 use crate::local_judge::{judge_local, TestCase};
-use crate::oj_sync::{fetch_oj_problem_details, parse_oj_problem};
+use crate::oj_sync::{fetch_oj_problem_details, normalize_external_verdict, parse_oj_problem};
 use crate::scoreboard::{
     compute_standings, ContestMeta, ScoreboardProblem, SubmissionForScore,
 };
@@ -101,6 +101,7 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/contests/join", post(join_contest_by_code))
         .route("/api/contests/:id", get(get_contest))
         .route("/api/contests/:id/prepare-external-submit", post(prepare_external_submit))
+        .route("/api/contests/:id/report-external-verdict", post(report_external_verdict))
         .route("/api/contests/:id/sync", post(sync_contest))
         .route("/api/contests/:id/sync-all", post(sync_all_contest))
         .route("/api/contests/:id/submit", post(submit_local))
@@ -1028,6 +1029,166 @@ async fn prepare_external_submit(
     .into_response()
 }
 
+#[derive(Deserialize)]
+struct ReportExternalVerdictReq {
+    #[serde(rename = "problemId")]
+    problem_id: i64,
+    platform: String,
+    #[serde(rename = "externalSubId")]
+    external_sub_id: String,
+    language: Option<String>,
+    code: Option<String>,
+    verdict: String,
+    #[serde(rename = "timeMs")]
+    time_ms: Option<i64>,
+    #[serde(rename = "memoryKb")]
+    memory_kb: Option<i64>,
+    #[serde(rename = "passedTests")]
+    passed_tests: Option<i64>,
+    #[serde(rename = "totalTests")]
+    total_tests: Option<i64>,
+}
+
+async fn report_external_verdict(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(contest_id): Path<i64>,
+    Json(body): Json<ReportExternalVerdictReq>,
+) -> Response {
+    let user = match require_user(&state, &headers) {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+    let platform = body.platform.trim().to_lowercase();
+    let ext_sub_id = body.external_sub_id.trim().to_string();
+    if platform.is_empty() || ext_sub_id.is_empty() {
+        return err_resp(400, "Platform and externalSubId are required.");
+    }
+    let verdict = normalize_external_verdict(&body.verdict);
+    let time_ms = body.time_ms.unwrap_or(0);
+    let memory_kb = body.memory_kb.unwrap_or(0);
+    let passed_tests = body.passed_tests.unwrap_or(0);
+    let total_tests = body.total_tests.unwrap_or(0);
+
+    let sub_id = {
+        let conn = state.db.lock().unwrap();
+        let in_contest: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contest_problems WHERE contest_id = ? AND problem_id = ?",
+                params![contest_id, body.problem_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if in_contest == 0 {
+            return err_resp(404, "Problem not in this contest.");
+        }
+
+        let existing: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT id, verdict FROM submissions WHERE external_sub_id = ? AND user_id = ?",
+                params![ext_sub_id, user.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+
+        if let Some((row_id, prev_verdict)) = existing {
+            let final_verdict = if prev_verdict != "PENDING" && verdict == "PENDING" {
+                prev_verdict.as_str()
+            } else {
+                verdict
+            };
+            let _ = conn.execute(
+                "UPDATE submissions
+                 SET verdict = ?,
+                     time_ms = CASE WHEN ? > 0 THEN ? ELSE time_ms END,
+                     memory_kb = CASE WHEN ? > 0 THEN ? ELSE memory_kb END,
+                     passed_tests = CASE WHEN ? > 0 THEN ? ELSE passed_tests END,
+                     total_tests = CASE WHEN ? > 0 THEN ? ELSE total_tests END
+                 WHERE id = ?",
+                params![
+                    final_verdict,
+                    time_ms,
+                    time_ms,
+                    memory_kb,
+                    memory_kb,
+                    passed_tests,
+                    passed_tests,
+                    total_tests,
+                    total_tests,
+                    row_id
+                ],
+            );
+            row_id
+        } else {
+            let code_backup = if let Some(c) = body.code.filter(|s| !s.trim().is_empty()) {
+                c
+            } else {
+                let draft: Option<(i64, String)> = conn
+                    .query_row(
+                        "SELECT id, code FROM external_submit_drafts WHERE contest_id = ? AND problem_id = ? AND user_id = ? AND used = 0 ORDER BY id DESC LIMIT 1",
+                        params![contest_id, body.problem_id, user.id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .ok();
+                if let Some((did, c)) = draft {
+                    let _ = conn.execute("UPDATE external_submit_drafts SET used = 1 WHERE id = ?", params![did]);
+                    c
+                } else {
+                    String::new()
+                }
+            };
+
+            let lang = body.language.unwrap_or_else(|| platform.clone());
+            if let Err(e) = conn.execute(
+                "INSERT INTO submissions (contest_id, problem_id, user_id, source_type, platform, external_sub_id, language, code, verdict, time_ms, memory_kb, passed_tests, total_tests, error_message, submitted_at)
+                 VALUES (?, ?, ?, 'external', ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)",
+                params![
+                    contest_id,
+                    body.problem_id,
+                    user.id,
+                    platform,
+                    ext_sub_id,
+                    lang,
+                    code_backup,
+                    verdict,
+                    time_ms,
+                    memory_kb,
+                    passed_tests,
+                    total_tests,
+                    now_unix()
+                ],
+            ) {
+                return err_resp(500, format!("Failed to save submission: {e}"));
+            }
+            conn.last_insert_rowid()
+        }
+    };
+
+    state.broadcast_contest(contest_id, "sync");
+    state.schedule_cloud_backup();
+
+    let conn = state.db.lock().unwrap();
+    let saved = conn
+        .query_row(
+            "SELECT id, verdict, time_ms, passed_tests, total_tests, platform, external_sub_id FROM submissions WHERE id = ?",
+            params![sub_id],
+            |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "verdict": r.get::<_, String>(1)?,
+                    "time_ms": r.get::<_, i64>(2)?,
+                    "passed_tests": r.get::<_, i64>(3)?,
+                    "total_tests": r.get::<_, i64>(4)?,
+                    "platform": r.get::<_, Option<String>>(5)?,
+                    "external_sub_id": r.get::<_, Option<String>>(6)?
+                }))
+            },
+        )
+        .unwrap_or_else(|_| json!({ "id": sub_id, "verdict": verdict }));
+
+    Json(json!({ "ok": true, "submission": saved })).into_response()
+}
+
 async fn sync_contest(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1084,7 +1245,19 @@ async fn sync_contest(
         (st, en, h_list, p_list)
     };
 
+    let has_cf_or_ac_prob = contest_probs
+        .iter()
+        .any(|(_, plat, _)| matches!(plat.as_str(), "codeforces" | "atcoder"));
     if handles.is_empty() {
+        if !has_cf_or_ac_prob {
+            return Json(json!({
+                "ok": true,
+                "syncedCount": 0,
+                "updatedCount": 0,
+                "notes": ["CSES/CodeChef verdicts sync via the Desktop App WebView."]
+            }))
+            .into_response();
+        }
         return err_resp(400, "Link an OJ handle (Codeforces / AtCoder) first.");
     }
 
@@ -1094,9 +1267,11 @@ async fn sync_contest(
     let mut fetched_cf = Vec::new();
     let mut fetched_ac = Vec::new();
     let mut notes = Vec::new();
+    let mut checked_cf_or_ac = false;
 
     for (plat, handle) in &handles {
         if plat == "codeforces" {
+            checked_cf_or_ac = true;
             let url = format!("{}/user.status?handle={}&from=1&count=30", state.cf_api_base, handle);
             match state.http.get(&url).send().await {
                 Ok(r) if r.status().is_success() => {
@@ -1108,6 +1283,7 @@ async fn sync_contest(
                 Err(e) => notes.push(format!("Codeforces unreachable: {e}")),
             }
         } else if plat == "atcoder" {
+            checked_cf_or_ac = true;
             let url = format!(
                 "{}/atcoder-api/v3/user/submissions?user={}&from_second={}",
                 state.atcoder_api_base, handle, start_time
@@ -1120,6 +1296,9 @@ async fn sync_contest(
                 }
             }
         }
+    }
+    if !checked_cf_or_ac {
+        notes.push("CSES/CodeChef verdicts sync via the Desktop App WebView.".to_string());
     }
 
     let (synced, updated) = {

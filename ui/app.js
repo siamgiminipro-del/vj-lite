@@ -10,6 +10,8 @@ const state = {
   standings: null,
   selectedOjTab: 'codeforces',
   awaitingReturn: false,
+  pendingSubmit: null,
+  pollTimer: null,
   sse: null,
 };
 
@@ -421,6 +423,52 @@ function renderActiveProblem() {
       : `${p.platform.toUpperCase()} • Direct Submit + API Sync`;
     $('btn-submit-local-alt').classList.toggle('hidden', !p.hasLocalTests);
   }
+  renderLastVerdictForActiveProblem();
+}
+
+function renderLastVerdictForActiveProblem() {
+  const box = $('last-verdict-box');
+  if (!box) return;
+  const uid = state.user?.id;
+  const pid = state.activeProblemId;
+  const cid = state.activeContestId;
+  if (!uid || !pid) {
+    box.classList.add('hidden');
+    return;
+  }
+
+  const latest = state.submissions.find((s) => s.user_id === uid && s.problem_id === pid);
+  const pend = state.pendingSubmit;
+  if (pend && pend.contestId === cid && pend.problemId === pid) {
+    const isCoveredByFinal = latest && latest.submitted_at >= pend.tsSec - 5 && latest.verdict !== 'PENDING';
+    if (!isCoveredByFinal) {
+      box.classList.remove('hidden');
+      const verdictText = latest && latest.submitted_at >= pend.tsSec - 5 ? latest.verdict : 'PENDING';
+      box.innerHTML = `<span class="pill pill-indigo">${esc(verdictText)}</span> • Judging on ${esc(
+        pend.platform.toUpperCase()
+      )}...`;
+      return;
+    }
+    state.pendingSubmit = null;
+  }
+
+  if (!latest) {
+    box.classList.add('hidden');
+    return;
+  }
+
+  const vClass =
+    latest.verdict === 'AC' ? 'pill-emerald' : latest.verdict === 'PENDING' ? 'pill-indigo' : 'pill-rose';
+  const testPart =
+    latest.total_tests > 0 || latest.passed_tests > 0
+      ? ` • ${latest.passed_tests}/${latest.total_tests || latest.passed_tests} tests`
+      : '';
+  const timePart = latest.time_ms ? ` • ${latest.time_ms} ms` : '';
+  const errPart = latest.error_message
+    ? `<div style="margin-top:0.3rem">${esc(latest.error_message)}</div>`
+    : '';
+  box.classList.remove('hidden');
+  box.innerHTML = `<strong>Verdict: <span class="pill ${vClass}">${esc(latest.verdict)}</span></strong>${testPart}${timePart}${errPart}`;
 }
 
 function renderSubmissions() {
@@ -694,6 +742,7 @@ async function loadSubmissions(contestId) {
   state.submissions = data.submissions;
   renderSubmissions();
   renderProblems();
+  renderLastVerdictForActiveProblem();
 }
 
 async function loadStandings(contestId) {
@@ -702,26 +751,78 @@ async function loadStandings(contestId) {
   renderStandings();
 }
 
+function pollExternalSync(contestId, problemId, platform) {
+  if (state.pollTimer) {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
+  const startTs = Math.floor(Date.now() / 1000);
+  const delays = [2000, 3500, 5000, 8000, 12000];
+  let idx = 0;
+
+  async function step() {
+    if (state.activeContestId !== contestId) return;
+    try {
+      const r = await api(`/api/contests/${contestId}/sync`, { method: 'POST', body: {} });
+      await Promise.all([loadSubmissions(contestId), loadStandings(contestId)]);
+      const hit = state.submissions.find(
+        (s) =>
+          s.user_id === state.user?.id &&
+          s.problem_id === problemId &&
+          s.submitted_at >= startTs - 120 &&
+          s.verdict !== 'PENDING'
+      );
+      if (hit) {
+        state.pendingSubmit = null;
+        renderLastVerdictForActiveProblem();
+        toast(`${platform.toUpperCase()} Verdict: ${hit.verdict}`, hit.verdict === 'AC' ? 'success' : 'error');
+        return;
+      }
+      if (r.syncedCount > 0 || r.updatedCount > 0) {
+        idx = Math.min(idx + 1, delays.length);
+      }
+    } catch (_) {}
+    if (idx < delays.length) {
+      state.pollTimer = setTimeout(step, delays[idx++]);
+    }
+  }
+
+  state.pollTimer = setTimeout(step, delays[idx++]);
+}
+
 async function handleExternalSubmit() {
   if (!state.user) return showView('login-gate');
   const prob = (state.contestData?.problems || []).find((p) => p.id === state.activeProblemId);
   if (!prob) return;
   const code = $('code-editor').value;
   const language = $('language-select').value;
+  if (inTauriApp() && !code.trim()) return toast('Write code first.', 'error');
 
   const prep = await api(`/api/contests/${state.activeContestId}/prepare-external-submit`, {
     method: 'POST',
     body: { problemId: prob.id, language, code },
   });
 
+  state.pendingSubmit = {
+    contestId: state.activeContestId,
+    problemId: prob.id,
+    platform: prep.platform,
+    language,
+    code,
+    tsSec: Math.floor(Date.now() / 1000),
+  };
+  renderLastVerdictForActiveProblem();
+
   if (inTauriApp()) {
     await tauriInvoke('submit_via_webview', {
+      contestId: state.activeContestId,
+      problemId: prob.id,
       platform: prep.platform,
       submitUrl: prep.submitUrl,
       language,
       code,
     });
-    toast(`Submitting to ${prep.platform} in background WebView...`, 'info');
+    toast(`Submitting to ${prep.platform.toUpperCase()} in background WebView...`, 'info');
   } else {
     if (code.trim() && navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(code).catch(() => {});
@@ -869,12 +970,57 @@ function wireEvents() {
       }
     });
 
+    window.__TAURI__.event.listen('oj-verdict-update', async (event) => {
+      const p = event.payload || {};
+      if (!p.contestId || !p.problemId || !p.externalSubId) return;
+      try {
+        const pend = state.pendingSubmit;
+        const usedLang =
+          pend && pend.problemId === p.problemId ? pend.language : $('language-select').value;
+        const usedCode = pend && pend.problemId === p.problemId ? pend.code : '';
+        await api(`/api/contests/${p.contestId}/report-external-verdict`, {
+          method: 'POST',
+          body: {
+            problemId: p.problemId,
+            platform: p.platform || 'cses',
+            externalSubId: p.externalSubId,
+            language: usedLang,
+            code: usedCode,
+            verdict: p.verdict || 'PENDING',
+            timeMs: p.timeMs || 0,
+            passedTests: p.passedTests || 0,
+            totalTests: p.totalTests || 0,
+          },
+        });
+        if (state.activeContestId === p.contestId) {
+          await Promise.all([loadSubmissions(p.contestId), loadStandings(p.contestId)]);
+        }
+        if (p.isFinal) {
+          state.pendingSubmit = null;
+          renderLastVerdictForActiveProblem();
+          toast(
+            `${String(p.platform || 'OJ').toUpperCase()} Verdict: ${p.verdict}`,
+            p.verdict === 'AC' ? 'success' : 'error'
+          );
+        }
+      } catch (err) {
+        uiLog(`oj-verdict-update error: ${err?.message || err}`);
+        toast(err.message || 'Failed to save verdict.', 'error');
+      }
+    });
+
     window.__TAURI__.event.listen('oj-submit-done', async (event) => {
-      const plat = event.payload || 'OJ';
-      toast(`Submitted to ${String(plat).toUpperCase()}! Auto-syncing verdicts...`, 'success');
-      if (state.activeContestId) {
-        setTimeout(() => $('btn-sync-verdicts')?.click(), 2500);
-        setTimeout(() => $('btn-sync-verdicts')?.click(), 8500);
+      const payload = event.payload;
+      const plat = (typeof payload === 'string' ? payload : payload?.platform || 'OJ').toLowerCase();
+      const cid = typeof payload === 'object' ? payload?.contestId : state.activeContestId;
+      const pid = typeof payload === 'object' ? payload?.problemId : state.activeProblemId;
+      if (plat === 'cses') {
+        toast('Submitted to CSES! Watching live judge result...', 'info');
+        return;
+      }
+      toast(`Submitted to ${plat.toUpperCase()}! Auto-syncing verdicts...`, 'success');
+      if (cid) {
+        pollExternalSync(cid, pid, plat);
       }
     });
   }
@@ -1086,9 +1232,24 @@ function wireEvents() {
   $('btn-submit-local').addEventListener('click', () => handleLocalJudge(false).catch((e) => toast(e.message, 'error')));
   $('btn-sync-verdicts').addEventListener('click', async () => {
     try {
-      const r = await api(`/api/contests/${state.activeContestId}/sync`, { method: 'POST', body: {} });
-      toast(`Synced ${r.syncedCount} new, ${r.updatedCount} updated.`, 'success');
-      await Promise.all([loadSubmissions(state.activeContestId), loadStandings(state.activeContestId)]);
+      const cid = state.activeContestId;
+      if (!cid) return;
+      if (inTauriApp()) {
+        const probs = state.contestData?.problems || [];
+        const activeCses = probs.find((p) => p.id === state.activeProblemId && p.platform === 'cses' && p.problemUrl)
+          || probs.find((p) => p.platform === 'cses' && p.problemUrl);
+        if (activeCses) {
+          tauriInvoke('sync_cses_latest_via_webview', {
+            contestId: cid,
+            problemId: activeCses.id,
+            problemUrl: activeCses.problemUrl,
+          }).catch(() => {});
+        }
+      }
+      const r = await api(`/api/contests/${cid}/sync`, { method: 'POST', body: {} });
+      const noteMsg = (r.notes || []).length ? ` (${r.notes[0]})` : '';
+      toast(`Synced ${r.syncedCount} new, ${r.updatedCount} updated.${noteMsg}`, 'success');
+      await Promise.all([loadSubmissions(cid), loadStandings(cid)]);
     } catch (e) {
       toast(e.message, 'error');
     }

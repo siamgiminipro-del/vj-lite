@@ -1,7 +1,7 @@
 use keyring::Entry;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 const STANDARD_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15";
@@ -17,6 +17,187 @@ struct OjSessionSavedPayload {
     platform: String,
     handle: Option<String>,
     method: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OjVerdictPayload {
+    contest_id: i64,
+    problem_id: i64,
+    platform: String,
+    external_sub_id: String,
+    verdict: String,
+    time_ms: i64,
+    passed_tests: i64,
+    total_tests: i64,
+    is_final: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OjSubmitDonePayload {
+    contest_id: i64,
+    problem_id: i64,
+    platform: String,
+    language: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ParsedTitleVerdict {
+    external_sub_id: String,
+    verdict: String,
+    time_ms: i64,
+    passed_tests: i64,
+    total_tests: i64,
+    is_final: bool,
+}
+
+const CSES_RESULT_WATCHER_JS: &str = r#"
+(function() {
+  if (!window.location.hostname.toLowerCase().includes('cses.fi')) return;
+  const path = window.location.pathname.toLowerCase();
+  if (!path.includes('/result/')) return;
+  const match = window.location.pathname.match(/\/result\/(\d+)/i);
+  if (!match) return;
+  const extId = 'cses:' + match[1];
+
+  function mapVerdict(text) {
+    const u = String(text || '').toUpperCase();
+    if (u.includes('ACCEPTED')) return 'AC';
+    if (u.includes('WRONG ANSWER') || u.includes('WRONG_ANSWER')) return 'WA';
+    if (u.includes('TIME LIMIT')) return 'TLE';
+    if (u.includes('MEMORY LIMIT')) return 'MLE';
+    if (u.includes('RUNTIME ERROR')) return 'RE';
+    if (u.includes('OUTPUT LIMIT')) return 'OLE';
+    if (u.includes('COMPIL')) return 'CE';
+    return 'PENDING';
+  }
+
+  function parseResultDoc(doc) {
+    let statusText = '';
+    let resultText = '';
+    for (const tr of doc.querySelectorAll('table.summary-table tr, table tr')) {
+      const cells = tr.querySelectorAll('th, td');
+      if (cells.length >= 2) {
+        const k = cells[0].textContent.trim().toLowerCase();
+        const v = cells[1].textContent.trim();
+        if (k.includes('status')) statusText = v.toUpperCase();
+        if (k.includes('result') || k === 'verdict') resultText = v.toUpperCase();
+      }
+    }
+
+    let verdict = mapVerdict(resultText);
+    if (verdict === 'PENDING') {
+      const bodyUpper = (doc.body?.textContent || '').toUpperCase();
+      if (statusText.includes('READY') || bodyUpper.includes('COMPILER MESSAGE') || bodyUpper.includes('COMPILE ERROR')) {
+        if (bodyUpper.includes('COMPIL')) verdict = 'CE';
+        else if (bodyUpper.includes('ACCEPTED')) verdict = 'AC';
+        else if (bodyUpper.includes('WRONG ANSWER')) verdict = 'WA';
+        else if (bodyUpper.includes('TIME LIMIT')) verdict = 'TLE';
+        else if (bodyUpper.includes('MEMORY LIMIT')) verdict = 'MLE';
+        else if (bodyUpper.includes('RUNTIME ERROR')) verdict = 'RE';
+      }
+    }
+
+    let passedTests = 0;
+    let totalTests = 0;
+    let maxTimeMs = 0;
+    for (const tr of doc.querySelectorAll('table tr')) {
+      if (tr.closest('table.summary-table')) continue;
+      const tds = [...tr.querySelectorAll('td')];
+      if (tds.length < 2) continue;
+      const rowTxt = tr.textContent.toUpperCase();
+      const rowV = mapVerdict(rowTxt);
+      if (rowV !== 'PENDING') {
+        totalTests += 1;
+        if (rowV === 'AC') passedTests += 1;
+      }
+      const tm = rowTxt.match(/(\d+(?:\.\d+)?)\s*S\b/);
+      if (tm) {
+        const ms = Math.round(parseFloat(tm[1]) * 1000);
+        if (ms > maxTimeMs) maxTimeMs = ms;
+      }
+    }
+
+    const stillRunning =
+      statusText.includes('PENDING') ||
+      statusText.includes('TESTING') ||
+      statusText.includes('QUEUE') ||
+      statusText.includes('WAIT') ||
+      statusText.includes('COMPIL');
+    const isFinal = verdict === 'CE' || (verdict !== 'PENDING' && !stillRunning);
+    return { externalSubId: extId, verdict, timeMs: maxTimeMs, passedTests, totalTests, isFinal };
+  }
+
+  let ticks = 0;
+  let lastSig = '';
+  async function pollOnce() {
+    ticks += 1;
+    let doc = document;
+    let parsed = parseResultDoc(doc);
+    if (!parsed.isFinal && ticks >= 2) {
+      try {
+        const resp = await fetch(window.location.href, { credentials: 'include', cache: 'no-store' });
+        if (resp.ok) {
+          const html = await resp.text();
+          doc = new DOMParser().parseFromString(html, 'text/html');
+          parsed = parseResultDoc(doc);
+        }
+      } catch (_) {}
+    }
+    const sig = JSON.stringify(parsed);
+    if (sig !== lastSig) {
+      lastSig = sig;
+      document.title = '__VJ_VERDICT__' + sig;
+    }
+    if (!parsed.isFinal && ticks < 60) {
+      setTimeout(pollOnce, 800);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', () => setTimeout(pollOnce, 150));
+  } else {
+    setTimeout(pollOnce, 150);
+  }
+})();
+"#;
+
+fn handle_cses_title_change(
+    app: &AppHandle,
+    win: &WebviewWindow,
+    title: &str,
+    contest_id: i64,
+    problem_id: i64,
+    platform: &str,
+) {
+    if title == "__VJ_VERDICT_NONE__" {
+        let _ = win.close();
+        return;
+    }
+    if let Some(raw_json) = title.strip_prefix("__VJ_VERDICT__") {
+        if let Ok(parsed) = serde_json::from_str::<ParsedTitleVerdict>(raw_json) {
+            let is_final = parsed.is_final;
+            let _ = app.emit(
+                "oj-verdict-update",
+                OjVerdictPayload {
+                    contest_id,
+                    problem_id,
+                    platform: platform.to_string(),
+                    external_sub_id: parsed.external_sub_id,
+                    verdict: parsed.verdict,
+                    time_ms: parsed.time_ms,
+                    passed_tests: parsed.passed_tests,
+                    total_tests: parsed.total_tests,
+                    is_final,
+                },
+            );
+            if is_final {
+                let _ = win.close();
+            }
+        }
+    }
 }
 
 fn load_saved_keychain_creds(platform: &str) -> Option<(String, String)> {
@@ -237,6 +418,8 @@ async fn open_oj_login_webview(
 #[tauri::command]
 async fn submit_via_webview(
     app: AppHandle,
+    contest_id: i64,
+    problem_id: i64,
     platform: String,
     submit_url: String,
     language: String,
@@ -254,7 +437,7 @@ async fn submit_via_webview(
     )
     .unwrap_or_else(|_| "\"\"".into());
 
-    let init_js = format!(
+    let submit_form_js = format!(
         r#"
         window.addEventListener('DOMContentLoaded', () => {{
           const path = window.location.pathname.toLowerCase();
@@ -345,29 +528,68 @@ async fn submit_via_webview(
         }});
         "#
     );
+    let init_js = format!("{submit_form_js}\n{CSES_RESULT_WATCHER_JS}");
 
     if let Some(existing) = app.get_webview_window("oj-submit") {
         let _ = existing.close();
     }
 
     let parsed_url: tauri::Url = submit_url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
-    let app_handle = app.clone();
-    let plat_clone = platform.clone();
+    let app_for_load = app.clone();
+    let app_for_title = app.clone();
+    let plat_for_load = platform.to_lowercase();
+    let plat_for_title = plat_for_load.clone();
+    let lang_for_load = language.clone();
+
     WebviewWindowBuilder::new(&app, "oj-submit", WebviewUrl::External(parsed_url))
         .title("OJ Submit Window")
         .user_agent(STANDARD_USER_AGENT)
         .inner_size(960.0, 720.0)
         .visible(false)
         .initialization_script(&init_js)
+        .on_document_title_changed(move |win, title| {
+            handle_cses_title_change(
+                &app_for_title,
+                &win,
+                &title,
+                contest_id,
+                problem_id,
+                &plat_for_title,
+            );
+        })
         .on_page_load(move |win, payload| {
             if matches!(payload.event(), PageLoadEvent::Finished) {
                 let path = payload.url().path().to_lowercase();
                 if path.contains("enter") || path.contains("login") {
                     let _ = win.show();
                     let _ = win.set_focus();
+                } else if plat_for_load == "cses" && path.contains("/result/") {
+                    let _ = win.hide();
+                    let _ = app_for_load.emit(
+                        "oj-submit-done",
+                        OjSubmitDonePayload {
+                            contest_id,
+                            problem_id,
+                            platform: plat_for_load.clone(),
+                            language: lang_for_load.clone(),
+                        },
+                    );
+                    let w = win.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(50)).await;
+                        let _ = w.close();
+                    });
                 } else if !path.contains("submit") {
                     let _ = win.close();
-                    let _ = app_handle.emit("oj-submit-done", plat_clone.clone());
+                    let _ = app_for_load.emit(
+                        "oj-submit-done",
+                        OjSubmitDonePayload {
+                            contest_id,
+                            problem_id,
+                            platform: plat_for_load.clone(),
+                            language: lang_for_load.clone(),
+                        },
+                    );
                 } else {
                     // If auto-submit didn't redirect within 2.5s (e.g. human verification), show window to user
                     let w = win.clone();
@@ -386,6 +608,60 @@ async fn submit_via_webview(
         })
         .build()
         .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn sync_cses_latest_via_webview(
+    app: AppHandle,
+    contest_id: i64,
+    problem_id: i64,
+    problem_url: String,
+) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("oj-cses-sync") {
+        let _ = existing.close();
+    }
+    let parsed_url: tauri::Url = problem_url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
+    let nav_js = r#"
+    window.addEventListener('DOMContentLoaded', () => {
+      const path = window.location.pathname.toLowerCase();
+      if (path.includes('/problemset/task/')) {
+        const links = [...document.querySelectorAll('a[href*="/problemset/result/"]')];
+        if (links.length > 0) {
+          window.location.href = links[0].href;
+        } else {
+          document.title = '__VJ_VERDICT_NONE__';
+        }
+      }
+    });
+    "#;
+    let init_js = format!("{nav_js}\n{CSES_RESULT_WATCHER_JS}");
+    let app_handle = app.clone();
+
+    let win = WebviewWindowBuilder::new(&app, "oj-cses-sync", WebviewUrl::External(parsed_url))
+        .title("CSES Sync")
+        .user_agent(STANDARD_USER_AGENT)
+        .inner_size(800.0, 600.0)
+        .visible(false)
+        .initialization_script(&init_js)
+        .on_document_title_changed(move |win, title| {
+            handle_cses_title_change(
+                &app_handle,
+                &win,
+                &title,
+                contest_id,
+                problem_id,
+                "cses",
+            );
+        })
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        let _ = win.close();
+    });
 
     Ok(())
 }
@@ -515,6 +791,7 @@ fn main() {
             login_oj_with_password,
             open_oj_login_webview,
             submit_via_webview,
+            sync_cses_latest_via_webview,
             start_supabase_google_oauth
         ])
         .run(tauri::generate_context!())
