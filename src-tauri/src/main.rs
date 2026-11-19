@@ -275,10 +275,27 @@ async fn submit_via_webview(
             return;
           }}
           if (!path.includes('submit')) return;
-          const form = document.querySelector('form.submit-form, form[action*="submit"]');
+          const form =
+            document.querySelector('form.submit-form, form[action*="submit"], form[action*="send.php"]') ||
+            document.querySelector('input[type="file"]')?.closest('form') ||
+            document.querySelector('#sourceCodeTextarea, textarea[name="source"], textarea[name="sourceCode"]')?.closest('form');
           if (!form) return;
           const lang = {lang_json};
           const code = {code_json};
+          const extMap = {{ cpp: 'solution.cpp', python3: 'solution.py', javascript: 'solution.js' }};
+          const fileName = extMap[lang] || 'solution.txt';
+          const fileInput = form.querySelector('input[type="file"][name="sourceFile"], input[type="file"][name="file"], input[type="file"]');
+          const textarea = form.querySelector('#sourceCodeTextarea, textarea[name="source"], textarea[name="sourceCode"]');
+          if (fileInput && typeof DataTransfer !== 'undefined') {{
+            const dt = new DataTransfer();
+            dt.items.add(new File([code], fileName, {{ type: 'text/plain' }}));
+            fileInput.files = dt.files;
+            fileInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+          }} else if (textarea) {{
+            textarea.value = code;
+            textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+          }}
+
           const cfSelect = form.querySelector('select[name="programTypeId"]');
           if (cfSelect) {{
             const map = {{ cpp: ['89','73','54'], python3: ['31','70'], javascript: ['55'] }};
@@ -286,6 +303,16 @@ async fn submit_via_webview(
               if ([...cfSelect.options].some(o => o.value === val)) {{ cfSelect.value = val; break; }}
             }}
           }}
+
+          const acSelect = form.querySelector('select[name="data.LanguageId"]');
+          if (acSelect) {{
+            const targets = {{ cpp: ['C++ 20', 'C++ 23', 'C++'], python3: ['Python (CPython', 'PyPy', 'Python'], javascript: ['Node.js', 'JavaScript'] }}[lang] || [];
+            for (const t of targets) {{
+              const opt = [...acSelect.options].find(o => o.textContent.includes(t));
+              if (opt) {{ acSelect.value = opt.value; acSelect.dispatchEvent(new Event('change', {{ bubbles: true }})); break; }}
+            }}
+          }}
+
           const csesSelect = form.querySelector('select[name="lang"]');
           if (csesSelect) {{
             const targets = {{
@@ -298,19 +325,23 @@ async fn submit_via_webview(
               if (opt) {{ csesSelect.value = opt.value; csesSelect.dispatchEvent(new Event('change', {{ bubbles: true }})); break; }}
             }}
           }}
-          const extMap = {{ cpp: 'solution.cpp', python3: 'solution.py', javascript: 'solution.js' }};
-          const fileName = extMap[lang] || 'solution.txt';
-          const fileInput = form.querySelector('input[type="file"][name="sourceFile"], input[type="file"][name="file"], input[type="file"]');
-          const textarea = form.querySelector('#sourceCodeTextarea, textarea[name="source"], textarea[name="sourceCode"]');
-          if (fileInput && typeof DataTransfer !== 'undefined') {{
-            const dt = new DataTransfer();
-            dt.items.add(new File([code], fileName, {{ type: 'text/plain' }}));
-            fileInput.files = dt.files;
-            fileInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
-          }} else if (textarea) {{
-            textarea.value = code;
-          }}
-          form.submit();
+
+          setTimeout(() => {{
+            const csesOpt = form.querySelector('select[name="option"]');
+            if (csesOpt && (!csesOpt.value || csesOpt.value === '')) {{
+              const pref = {{ cpp: ['C++20', 'C++17', 'C++11'], python3: ['PyPy3', 'CPython3'] }}[lang] || [];
+              let picked = null;
+              for (const p of pref) {{
+                picked = [...csesOpt.options].find(o => o.value.includes(p) || o.textContent.includes(p));
+                if (picked) break;
+              }}
+              if (!picked && csesOpt.options.length > 0) picked = csesOpt.options[csesOpt.options.length - 1];
+              if (picked) {{ csesOpt.value = picked.value; csesOpt.dispatchEvent(new Event('change', {{ bubbles: true }})); }}
+            }}
+            const subBtn = form.querySelector('input[type="submit"], button[type="submit"]');
+            if (subBtn) subBtn.click();
+            else HTMLFormElement.prototype.submit.call(form);
+          }}, 250);
         }});
         "#
     );
