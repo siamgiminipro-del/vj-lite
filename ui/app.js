@@ -798,10 +798,22 @@ async function handleExternalSubmit() {
   const language = $('language-select').value;
   if (inTauriApp() && !code.trim()) return toast('Write code first.', 'error');
 
-  const prep = await api(`/api/contests/${state.activeContestId}/prepare-external-submit`, {
-    method: 'POST',
-    body: { problemId: prob.id, language, code },
-  });
+  let prep;
+  try {
+    prep = await api(`/api/contests/${state.activeContestId}/prepare-external-submit`, {
+      method: 'POST',
+      body: { problemId: prob.id, language, code },
+    });
+  } catch (err) {
+    const msg = err?.message || '';
+    if (msg.toLowerCase().includes('no longer exists') || msg.toLowerCase().includes('not found')) {
+      state.pendingSubmit = null;
+      await loadContests().catch(() => {});
+      showView('hub');
+    }
+    toast(msg || 'Could not prepare submission.', 'error');
+    return;
+  }
 
   state.pendingSubmit = {
     contestId: state.activeContestId,
@@ -1005,6 +1017,17 @@ function wireEvents() {
         }
       } catch (err) {
         uiLog(`oj-verdict-update error: ${err?.message || err}`);
+        if (p.isFinal) {
+          state.pendingSubmit = null;
+          const box = $('last-verdict-box');
+          if (box && state.activeProblemId === p.problemId) {
+            const vClass = p.verdict === 'AC' ? 'pill-emerald' : 'pill-rose';
+            box.classList.remove('hidden');
+            box.innerHTML = `<strong>Verdict: <span class="pill ${vClass}">${esc(
+              p.verdict
+            )}</span></strong> (could not sync to server: ${esc(err?.message || 'error')})`;
+          }
+        }
         toast(err.message || 'Failed to save verdict.', 'error');
       }
     });

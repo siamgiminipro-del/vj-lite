@@ -986,20 +986,32 @@ async fn prepare_external_submit(
     };
 
     let conn = state.db.lock().unwrap();
-    let row: Option<(String, String)> = conn
+    let row: Option<(String, String, String)> = conn
         .query_row(
-            "SELECT p.platform, p.external_id
+            "SELECT p.source_type, p.platform, p.external_id
              FROM contest_problems cp
              JOIN problems p ON p.id = cp.problem_id
-             WHERE cp.contest_id = ? AND cp.problem_id = ? AND p.source_type = 'external'",
+             WHERE cp.contest_id = ? AND cp.problem_id = ?",
             params![contest_id, body.problem_id],
-            |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, Option<String>>(1)?.unwrap_or_default())),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                ))
+            },
         )
         .ok();
 
-    let Some((platform, ext_id)) = row else {
-        return err_resp(400, "Problem is not an external OJ problem.");
+    let Some((source_type, platform, ext_id)) = row else {
+        return err_resp(
+            404,
+            "Contest or problem no longer exists on the server (server may have restarted). Please return to Hub and refresh.",
+        );
     };
+    if source_type != "external" {
+        return err_resp(400, "Problem is not an external OJ problem.");
+    }
     let Some(parsed) = parse_oj_problem(&platform, &ext_id) else {
         return err_resp(400, "Could not parse external OJ problem URL.");
     };

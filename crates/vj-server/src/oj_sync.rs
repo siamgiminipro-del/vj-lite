@@ -446,6 +446,13 @@ fn decode_html_entities(s: &str) -> String {
         .replace("&nbsp;", " ")
         .replace("&le;", "<=")
         .replace("&ge;", ">=")
+        .replace("\\le", "≤")
+        .replace("\\ge", "≥")
+        .replace("\\dots", "…")
+        .replace("\\ldots", "…")
+        .replace("\\cdot", "·")
+        .replace("\\times", "×")
+        .replace("\\ne", "≠")
 }
 
 fn strip_html_tags(html: &str) -> String {
