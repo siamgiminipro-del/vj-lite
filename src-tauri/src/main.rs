@@ -286,12 +286,27 @@ async fn submit_via_webview(
               if ([...cfSelect.options].some(o => o.value === val)) {{ cfSelect.value = val; break; }}
             }}
           }}
-          const fileInput = form.querySelector('input[type="file"][name="sourceFile"], input[type="file"]');
+          const csesSelect = form.querySelector('select[name="lang"]');
+          if (csesSelect) {{
+            const targets = {{
+              cpp: ['C++', 'C++20', 'C++17'],
+              python3: ['Python3', 'PyPy3'],
+              javascript: ['Node.js']
+            }}[lang] || [];
+            for (const t of targets) {{
+              const opt = [...csesSelect.options].find(o => o.value === t || o.textContent.trim().startsWith(t));
+              if (opt) {{ csesSelect.value = opt.value; csesSelect.dispatchEvent(new Event('change', {{ bubbles: true }})); break; }}
+            }}
+          }}
+          const extMap = {{ cpp: 'solution.cpp', python3: 'solution.py', javascript: 'solution.js' }};
+          const fileName = extMap[lang] || 'solution.txt';
+          const fileInput = form.querySelector('input[type="file"][name="sourceFile"], input[type="file"][name="file"], input[type="file"]');
           const textarea = form.querySelector('#sourceCodeTextarea, textarea[name="source"], textarea[name="sourceCode"]');
           if (fileInput && typeof DataTransfer !== 'undefined') {{
             const dt = new DataTransfer();
-            dt.items.add(new File([code], 'solution.txt', {{ type: 'text/plain' }}));
+            dt.items.add(new File([code], fileName, {{ type: 'text/plain' }}));
             fileInput.files = dt.files;
+            fileInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
           }} else if (textarea) {{
             textarea.value = code;
           }}

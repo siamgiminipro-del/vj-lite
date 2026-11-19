@@ -726,6 +726,20 @@ async function handleExternalSubmit() {
     if (code.trim() && navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(code).catch(() => {});
     }
+    if (prep.platform === 'cses' && code.trim()) {
+      const extMap = { cpp: 'solution.cpp', python3: 'solution.py', javascript: 'solution.js' };
+      const fname = extMap[language] || 'solution.txt';
+      const blob = new Blob([code], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = fname;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      state.awaitingReturn = true;
+      window.open(prep.submitUrl, '_blank', 'noopener,noreferrer');
+      toast(`Downloaded ${fname} — upload it on the opened CSES submit page!`, 'info');
+      return;
+    }
     state.awaitingReturn = true;
     window.open(prep.submitUrl, '_blank', 'noopener,noreferrer');
     toast(`Opened ${prep.platform} submit tab — return here to auto-sync verdict.`, 'info');
