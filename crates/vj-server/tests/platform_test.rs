@@ -163,6 +163,43 @@ async fn test_health_google_auth_access_code_and_past_contests() {
         .await
         .unwrap();
     assert_eq!(after_logout.status(), 401);
+
+    // 10. Creating > 10 contests prunes the DB to retain strictly the latest 10 contests
+    for i in 1..=11 {
+        let r = client
+            .post(format!("{base}/api/contests"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "title": format!("Retention Round #{i}"),
+                "accessCode": format!("RET-{i}"),
+                "startTime": now - 7200,
+                "endTime": now - 3600,
+                "problemIds": [1]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 201);
+    }
+    let final_list: Value = client
+        .get(format!("{base}/api/contests?limit=50"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(final_list["contests"].as_array().unwrap().len(), 10);
+    let final_health: Value = client
+        .get(format!("{base}/api/health"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(final_health["contestCount"], 10);
 }
 
 #[tokio::test]

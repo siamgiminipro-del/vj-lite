@@ -10,7 +10,11 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("ui"));
 
-    let (app, _) = build_app(&db_path, ui_dir, None, None).expect("Failed to initialize database");
+    let restored = vj_server::cloud_sync::restore_db_from_cloud(&db_path).await;
+    let (app, state) = build_app(&db_path, ui_dir, None, None).expect("Failed to initialize database");
+    if !restored {
+        state.schedule_cloud_backup();
+    }
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

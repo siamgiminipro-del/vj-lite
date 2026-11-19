@@ -32,9 +32,16 @@ pub struct AppState {
     pub cf_api_base: String,
     pub atcoder_api_base: String,
     pub sse_channels: Arc<Mutex<HashMap<i64, broadcast::Sender<String>>>>,
+    pub cloud_sync_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 impl AppState {
+    pub fn schedule_cloud_backup(&self) {
+        if let Some(tx) = &self.cloud_sync_tx {
+            let _ = tx.send(());
+        }
+    }
+
     pub fn broadcast_contest(&self, contest_id: i64, msg: &str) {
         let sender = {
             let map = self.sse_channels.lock().unwrap();
@@ -158,12 +165,15 @@ async fn supabase_auth(State(state): State<AppState>, Json(body): Json<SupabaseA
 
     let conn = state.db.lock().unwrap();
     match futures_free_google_upsert(&conn, &email, name, Some("supabase-verified")) {
-        Ok((user, token)) => (
-            StatusCode::OK,
-            session_cookie_header(&token),
-            Json(json!({ "user": user, "token": token })),
-        )
-            .into_response(),
+        Ok((user, token)) => {
+            state.schedule_cloud_backup();
+            (
+                StatusCode::OK,
+                session_cookie_header(&token),
+                Json(json!({ "user": user, "token": token })),
+            )
+                .into_response()
+        }
         Err((s, m)) => err_resp(s, m),
     }
 }
@@ -181,7 +191,9 @@ async fn health(State(state): State<AppState>) -> Response {
         "engine": "rust-axum",
         "userCount": user_count,
         "maxUsers": max_users(),
-        "contestCount": contest_count
+        "contestCount": contest_count,
+        "maxContests": 10,
+        "cloudPersistence": state.cloud_sync_tx.is_some()
     }))
     .into_response()
 }
@@ -406,6 +418,7 @@ async fn link_oj(
         params![user.id, platform, handle],
     );
     let updated = get_user_by_id(&conn, user.id);
+    state.schedule_cloud_backup();
     Json(json!({ "ok": true, "user": updated })).into_response()
 }
 
@@ -430,6 +443,7 @@ async fn unlink_oj(
         params![user.id, platform],
     );
     let updated = get_user_by_id(&conn, user.id);
+    state.schedule_cloud_backup();
     Json(json!({ "ok": true, "user": updated })).into_response()
 }
 
@@ -581,6 +595,7 @@ async fn create_problem(
     )
     .unwrap();
     let id = conn.last_insert_rowid();
+    state.schedule_cloud_backup();
     (StatusCode::CREATED, Json(json!({ "id": id }))).into_response()
 }
 
@@ -599,7 +614,7 @@ async fn list_contests(
         Err(r) => return r,
     };
     let conn = state.db.lock().unwrap();
-    let limit = q.limit.unwrap_or(10).clamp(1, 50);
+    let limit = q.limit.unwrap_or(10).clamp(1, 10);
     let now = now_unix();
 
     let mut stmt = conn
@@ -735,6 +750,8 @@ async fn create_contest(
         "INSERT OR IGNORE INTO contest_participants (contest_id, user_id, joined_at) VALUES (?, ?, ?)",
         params![cid, user.id, now],
     );
+    crate::db::prune_old_contests(&conn);
+    state.schedule_cloud_backup();
 
     (StatusCode::CREATED, Json(json!({ "id": cid, "access_code": code.trim().to_uppercase() }))).into_response()
 }
@@ -790,6 +807,7 @@ async fn join_contest_by_code(
         "INSERT OR IGNORE INTO contest_participants (contest_id, user_id, joined_at) VALUES (?, ?, ?)",
         params![contest_id, user.id, now_unix()],
     );
+    state.schedule_cloud_backup();
 
     Json(json!({ "ok": true, "contestId": contest_id, "title": title })).into_response()
 }
@@ -1111,6 +1129,7 @@ async fn sync_contest(
 
     if synced > 0 || updated > 0 {
         state.broadcast_contest(contest_id, "sync");
+        state.schedule_cloud_backup();
     }
 
     Json(json!({
@@ -1346,6 +1365,7 @@ async fn sync_all_contest(
 
     if total_synced > 0 || total_updated > 0 {
         state.broadcast_contest(contest_id, "sync-all");
+        state.schedule_cloud_backup();
     }
 
     Json(json!({
@@ -1465,6 +1485,7 @@ async fn submit_local(
     };
 
     state.broadcast_contest(contest_id, "submission");
+    state.schedule_cloud_backup();
     (StatusCode::CREATED, Json(json!({ "submission": saved }))).into_response()
 }
 
@@ -1671,6 +1692,7 @@ async fn post_clarification(
     .unwrap();
     let id = conn.last_insert_rowid();
     state.broadcast_contest(contest_id, "clarification");
+    state.schedule_cloud_backup();
     (StatusCode::CREATED, Json(json!({ "id": id }))).into_response()
 }
 
@@ -1707,6 +1729,7 @@ async fn answer_clarification(
         params![body.answer.trim(), clar_id, contest_id],
     );
     state.broadcast_contest(contest_id, "clarification");
+    state.schedule_cloud_backup();
     Json(json!({ "ok": true })).into_response()
 }
 

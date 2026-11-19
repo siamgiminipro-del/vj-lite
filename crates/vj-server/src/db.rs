@@ -50,7 +50,23 @@ pub fn open_database(db_path: &str) -> Result<Connection> {
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     init_schema(&conn)?;
     seed_if_empty(&conn)?;
+    prune_old_contests(&conn);
     Ok(conn)
+}
+
+/// Retains at most the latest 10 contests (prioritizing active/upcoming contests, then most recent ended contests).
+pub fn prune_old_contests(conn: &Connection) -> usize {
+    let now = now_unix();
+    conn.execute(
+        "DELETE FROM contests
+         WHERE id NOT IN (
+             SELECT id FROM contests
+             ORDER BY CASE WHEN ? <= end_time THEN 0 ELSE 1 END, id DESC
+             LIMIT 10
+         )",
+        params![now],
+    )
+    .unwrap_or(0)
 }
 
 fn init_schema(conn: &Connection) -> Result<()> {
